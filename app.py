@@ -168,7 +168,7 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
     # 신청사건 비용 (인지: 전자 900원 / 종이 1,000원, 송달료: 피신청인 수 * 6회분)
     resp_count = options.get('respondent_count', 1)
     app_stamp = 900 if options.get('electronic', True) else 1_000
-    app_delivery = resp_count * 6 * DELIVERY_UNIT
+    app_delivery = (resp_count + 1) * 3 * DELIVERY_UNIT
     application_total = app_stamp + app_delivery
 
     final_total = borne_main_total + application_total
@@ -374,8 +374,8 @@ def main():
                                                help='피신청인 수에 따라 신청사건 송달료(인원 × 6회분 × 5,640원)가 자동 산출됩니다.'))
     with resp_col2:
         auto_app_stamp = 900 if electronic else 1_000
-        auto_app_delivery = respondent_count * 6 * DELIVERY_UNIT
-        st.info(f"📌 **신청 비용 자동 계산 내역**\n\n- 인지대: **{won(auto_app_stamp)}** (전자 기준)\n- 송달료: **{won(auto_app_delivery)}** ({respondent_count}명 × 6회분 × 5,640원)")
+        auto_app_delivery = (respondent_count + 1) * 3 * DELIVERY_UNIT
+st.info(f"📌 **신청 비용 자동 계산 내역**\n\n- 인지대: **{won(auto_app_stamp)}** (전자 기준)\n- 송달료: **{won(auto_app_delivery)}** (신청인 1명 + 피신청인 {respondent_count}명) × 3회분 × 5,640원")
 
     # 일부승소 부담비율 입력
     burden_rate = st.slider('피신청인 소송비용 부담비율(%)', min_value=1, max_value=100, value=100, step=1,
