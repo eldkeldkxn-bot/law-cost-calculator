@@ -235,7 +235,7 @@ def calculation_sections(cases, model, options):
         stage_title = f"{prefix}. {row['stage']}심 ({row['number']})"
         before.append(f"{stage_title} 소가: 금 {won(row['soga'])}")
         
-        actual_str = f" (실제 지급액: 금 {won(row['actual'])})" if row['actual'] is not None else " (실제 지급액 미입력, 한도액 적용)"
+        actual_str = f" (실제 지급액: 금 {won(row['actual'])})" if row['actual'] is not None else ""
         before.append(f"   - 변호사보수: 금 {won(row['calc_fee'])}{actual_str}")
         before.append(f"   - 최대인정보수 산식: {fee_formula(row['soga'], options.get('is_reduced', False))}")
 
