@@ -137,7 +137,6 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
     
     rows = []
     filing_rows = []
-    
     main_total = 0
     borne_main_total = 0
     
@@ -191,7 +190,6 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
         main_total += stage_sum
         borne_main_total += stage_borne
 
-    # 신청사건 비용
     resp_count = options.get('respondent_count', 1)
     app_stamp = 900 if options.get('electronic', True) else 1_000
     app_delivery = (resp_count + 1) * 3 * DELIVERY_UNIT
@@ -201,7 +199,6 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
     provisional = any(r["actual"] is None for r in rows)
     is_all_won = all(r['fraction'] == Fraction(1, 1) for r in rows)
 
-    # 상계 로직
     use_offset = options.get('use_offset', False)
     opp_rows = []
     opp_total = 0
@@ -274,11 +271,9 @@ def application_sections(cases, model, options):
 
 
 def generate_table_data(cases, model, options):
-    """표(법원 서식) 렌더링용 데이터 구조 생성"""
     table_rows = []
     
     for row in model['rows']:
-        # 사건번호 제거하고 'O심'만 표기
         stage_str = f"{row['stage']}심"
         stage_rows = []
         
@@ -315,7 +310,7 @@ def generate_table_data(cases, model, options):
                 'merge_len': len(stage_rows) if i == 0 else 0
             })
             
-    # 신청비용 ('소송비용액확정신청' 한 번만 표기)
+    # 확정신청 줄바꿈 없이 한 단어로 통일
     app_rows = [
         {'비목': '인지대', '비용액': won(model['app_stamp']), '비고': ''},
         {'비목': '송달료', '비용액': won(model['app_delivery']), '비고': f"피신청인 {model['respondent_count']}명 기준"},
@@ -323,14 +318,13 @@ def generate_table_data(cases, model, options):
     ]
     for i, ar in enumerate(app_rows):
         table_rows.append({
-            '심급': '소송비용액\n확정신청' if i == 0 else '', 
+            '심급': '소송비용액확정신청' if i == 0 else '', 
             '비목': ar['비목'], 
             '비용액': ar['비용액'], 
             '비고': ar['비고'],
             'merge_len': len(app_rows) if i == 0 else 0
         })
         
-    # 합계 (가운데 정렬을 위해 심급을 '합계'로 지정)
     total_amount = model['offset_final'] if model.get('use_offset') and model['offset_final'] > 0 else model['total']
     total_note = f"본안비용 {won(model['borne_main_total'])} + 신청비용 {won(model['application_total'])}"
     if model.get('use_offset'):
@@ -390,7 +384,8 @@ def render_text_calculation(cases, model, options):
 def make_docx(cases, model, options, prayer, cause):
     from docx import Document
     from docx.shared import Cm, Pt, RGBColor
-    from docx.oxml.ns import qn
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls, qn
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.enum.table import WD_ALIGN_VERTICAL
     
@@ -443,18 +438,34 @@ def make_docx(cases, model, options, prayer, cause):
         table_data = generate_table_data(cases, model, options)
         table = doc.add_table(rows=len(table_data)+1, cols=4)
         table.style = 'Table Grid'
-        
-        # 글자에 맞게 표 너비 최적화 (가로 총 16cm 기준)
         table.autofit = False
-        widths = [Cm(2.5), Cm(3.0), Cm(3.5), Cm(7.0)]
         
-        # 1. 텍스트 삽입 (헤더)
-        hdr_cells = table.rows[0].cells
-        headers = ['심급', '비목', '신청인 비용액', '비고']
-        for i in range(4):
-            hdr_cells[i].text = headers[i]
+        # 1. 셀 안쪽 여백(Padding) 추가 - 위아래 5pt, 좌우 7pt
+        tblPr = table._tbl.tblPr
+        cell_mar = parse_xml(
+            f'<w:tblCellMar {nsdecls("w")}>'
+            f'<w:top w:w="100" w:type="dxa"/>'
+            f'<w:bottom w:w="100" w:type="dxa"/>'
+            f'<w:left w:w="140" w:type="dxa"/>'
+            f'<w:right w:w="140" w:type="dxa"/>'
+            f'</w:tblCellMar>'
+        )
+        tblPr.append(cell_mar)
+        
+        # 2. 열 너비 지정 (가로 16cm 규격)
+        col_widths = [Cm(2.6), Cm(3.0), Cm(3.4), Cm(7.0)]
 
-        # 2. 텍스트 삽입 (데이터)
+        # 3. 헤더 행 텍스트 및 서식
+        headers = ['심급', '비목', '신청인 비용액', '비고']
+        hdr_row = table.rows[0]
+        for i, text in enumerate(headers):
+            cell = hdr_row.cells[i]
+            cell.text = text
+            # 헤더 배경 음영 (은은한 라이트 그레이)
+            shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="F2F4F7"/>')
+            cell._tc.get_or_add_tcPr().append(shd)
+
+        # 4. 데이터 텍스트 입력
         for r_idx, row in enumerate(table_data):
             cells = table.rows[r_idx+1].cells
             cells[0].text = row['심급']
@@ -462,44 +473,62 @@ def make_docx(cases, model, options, prayer, cause):
             cells[2].text = str(row['비용액'])
             cells[3].text = row['비고']
 
-        # 3. 셀 병합 처리 (세로 & 합계 가로)
+        # 5. 셀 병합 및 빈 문단(엔터) 완벽 삭제 로직
         row_idx = 1
         for row in table_data:
             m_len = row.get('merge_len', 0)
             if m_len > 1:
                 start_cell = table.cell(row_idx, 0)
                 end_cell = table.cell(row_idx + m_len - 1, 0)
-                start_cell.merge(end_cell)
+                merged = start_cell.merge(end_cell)
                 
-            # 합계 행 병합 (심급 + 비목 가로 병합)
+                # 병합 시 딸려오는 불필요한 빈 문단(<w:p>) 전부 삭제
+                while len(merged.paragraphs) > 1:
+                    p = merged.paragraphs[-1]._p
+                    p.getparent().remove(p)
+                    
             if row['심급'] == '합계':
                 start_cell = table.cell(row_idx, 0)
                 end_cell = table.cell(row_idx, 1)
-                start_cell.merge(end_cell)
-                start_cell.text = '합계'
+                merged = start_cell.merge(end_cell)
+                while len(merged.paragraphs) > 1:
+                    p = merged.paragraphs[-1]._p
+                    p.getparent().remove(p)
+                merged.paragraphs[0].text = '합계'
+                
+                # 합계 행 배경 강조
+                for c in [merged, table.cell(row_idx, 2), table.cell(row_idx, 3)]:
+                    shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="F9FAFB"/>')
+                    c._tc.get_or_add_tcPr().append(shd)
+                    
             row_idx += 1
-            
-        # 4. 정렬 및 너비, 폰트 일괄 적용
+
+        # 6. 정렬 및 글씨체, 상하단 간격(space_after) 제거
         for r_idx, row_obj in enumerate(table.rows):
             for c_idx, cell in enumerate(row_obj.cells):
-                cell.width = widths[c_idx]
-                cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER # 세로 가운데 정렬
+                cell.width = col_widths[c_idx]
+                cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER  # 완벽한 세로 정중앙
                 
                 for p in cell.paragraphs:
-                    # 폰트 지정
+                    # 표 안 문단의 기본 여백을 0으로 강제 초기화하여 상단 쏠림 방지
+                    p.paragraph_format.space_before = Pt(0)
+                    p.paragraph_format.space_after = Pt(0)
+                    p.paragraph_format.line_spacing = 1.15
+                    
                     for run in p.runs:
                         run.font.name = '나눔명조'
                         run._r.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'), '나눔명조')
-                        run.font.size = Pt(10)
-                        if r_idx == 0:
+                        run.font.size = Pt(9.5)
+                        if r_idx == 0 or (r_idx > 0 and table_data[r_idx-1]['비목'] in ['소계', '합계']):
                             run.font.bold = True
                     
-                    # 가로 정렬 지정 (신청인 비용액 숫자만 우측 정렬, 나머지 모두 정중앙)
                     if r_idx == 0:
                         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                     else:
                         if c_idx == 2:
                             p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                        elif c_idx == 3:
+                            p.alignment = WD_ALIGN_PARAGRAPH.LEFT  # 비고는 읽기 쉽게 좌측 정렬
                         else:
                             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                             
@@ -515,8 +544,9 @@ def make_docx(cases, model, options, prayer, cause):
 
 
 def main():
-    st.set_page_config(page_title='소송비용 신청서 만들기', page_icon='⚖️')
+    st.set_page_config(page_title='소송비용 신청서 만들기', page_icon='⚖️', layout='wide')
     
+    # 웹 화면에서도 표가 꽉 차고 가독성이 극대화되도록 CSS 추가
     st.markdown("""
     <style>
     [data-testid="stDownloadButton"] button {
@@ -528,6 +558,20 @@ def main():
     [data-testid="stDownloadButton"] button:hover {
         background-color: #bae6fd;
         color: #0c4a6e;
+    }
+    div[data-testid="stMarkdownContainer"] table {
+        width: 100% !important;
+        border-collapse: collapse;
+        font-size: 14px;
+    }
+    div[data-testid="stMarkdownContainer"] th {
+        background-color: #f1f5f9;
+        text-align: center !important;
+        padding: 10px;
+    }
+    div[data-testid="stMarkdownContainer"] td {
+        padding: 8px 10px;
+        vertical-align: middle;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -681,8 +725,6 @@ def main():
         st.caption('입력하지 않으면 확정일 문장은 문서에 넣지 않습니다.')
         
     st.markdown("---")
-    
-    # 🎈 양식 선택 토글을 확정일 밑으로 이동
     output_format = st.radio('📝 계산서 출력 양식', ['줄글 양식 (기본)', '표 양식 (법원 서식)'], horizontal=True)
         
     options = dict(electronic=electronic, party_count=party_count,
@@ -733,15 +775,12 @@ def main():
     
     if output_format == '표 양식 (법원 서식)':
         table_data = generate_table_data(cases, model, options)
-        # 웹 화면상 마크다운 표 정렬 (가운데, 가운데, 우측, 가운데)
-        md_table = "| 심급 | 비목 | 신청인 비용액 | 비고 |\n|:---:|:---:|---:|:---:|\n"
+        md_table = "| 심급 | 비목 | 신청인 비용액 | 비고 |\n|:---:|:---:|---:|:---|\n"
         for row in table_data:
-            # 병합된 빈 칸이나 합계 행 처리
-            display_stage = row['심급'].replace("\n", "<br>") if row['심급'] else ""
+            display_stage = row['심급']
             display_bimok = row['비목']
             if row['심급'] == '합계':
-                display_bimok = ""  # 합계 행 병합 느낌 내기
-            
+                display_bimok = ""
             formatted_row = [str(item).replace("\n", "<br>") for item in [display_stage, display_bimok, row['비용액'], row['비고']]]
             md_table += "| " + " | ".join(formatted_row) + " |\n"
         st.markdown(md_table, unsafe_allow_html=True)
