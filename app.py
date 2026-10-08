@@ -590,7 +590,7 @@ def main():
     case_column, name_column = st.columns([3, 1])
     with case_column:
         raw = st.text_area('1·2·3심 법원·사건번호 (선택)',
-                           placeholder='입력하지 않으면 기본 1심으로 산정됩니다. (예: 서울중앙지방법원 2023가합12345, 서울고등법원 2025나12345)', height=100)
+                           placeholder='(예: 서울중앙지방법원 2023가합12345, 서울고등법원 2025나12345)', height=100)
     with name_column:
         case_name = st.text_input('사건명', placeholder='약정금')
     st.caption('진행한 심급만 쉼표나 줄바꿈으로 구분하세요. 미입력 시 1심 단독 사건으로 자동 처리됩니다.')
