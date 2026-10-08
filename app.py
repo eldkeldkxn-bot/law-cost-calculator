@@ -6,6 +6,7 @@ from decimal import Decimal, ROUND_FLOOR
 from io import BytesIO
 import re
 import streamlit as st
+from fractions import Fraction
 
 # 2020.12.28. 개정 변호사보수의 소송비용 산입에 관한 규칙 별표
 BRACKETS = [
@@ -38,6 +39,20 @@ DELIVERY_ROUNDS = {
 
 def won(value):
     return f"{value:,}원"
+
+
+def parse_fraction(text):
+    text = text.strip()
+    if not text:
+        return Fraction(1, 1)
+    try:
+        if '/' in text:
+            num, den = map(int, text.split('/'))
+            return Fraction(num, den)
+        else:
+            return Fraction(int(text), 1)
+    except ValueError:
+        raise ValueError("부담비율은 '1/3', '1/1'과 같은 분수 형식으로 입력해주세요.")
 
 
 def fee_limit(soga):
@@ -122,8 +137,12 @@ def fee_formula(soga, is_reduced=False):
 
 def make_model(cases, soga_dict, actual_fees, filing_costs, options):
     is_reduced = options.get('is_reduced', False)
+    stage_settings = options.get('stage_settings', {})
     rows = []
     filing_rows = []
+    
+    main_total = 0
+    borne_main_total = 0
     
     for case in cases:
         c_num = case["number"]
@@ -141,14 +160,6 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
             raise ValueError(f"{stage}심 실제 보수는 음수일 수 없습니다.")
             
         calc_fee = limit if actual is None else min(limit, actual)
-        rows.append({
-            "stage": stage,
-            "number": c_num,
-            "soga": soga,
-            "limit": limit,
-            "actual": actual,
-            "calc_fee": calc_fee
-        })
         
         # 인지대 및 송달료
         f_entry = filing_costs.get(c_num, {})
@@ -157,16 +168,31 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
         delivery = f_entry.get('delivery', 0) if include else 0
         filing_rows.append(dict(stage=stage, number=c_num, stamp=stamp, delivery=delivery, include=include))
 
-    attorney_total = sum(r["calc_fee"] for r in rows)
-    filing_total = sum(r["stamp"] + r["delivery"] for r in filing_rows)
-    main_total = attorney_total + filing_total
+        # 추가 수기 금액 및 부담비율(분수) 적용
+        settings = stage_settings.get(c_num, {'fraction': Fraction(1, 1), 'manual_add': 0})
+        fraction = settings['fraction']
+        manual_add = settings['manual_add']
+        
+        stage_sum = calc_fee + stamp + delivery + manual_add
+        stage_borne = int(Decimal(stage_sum) * Decimal(fraction.numerator) / Decimal(fraction.denominator))
+        
+        rows.append({
+            "stage": stage,
+            "number": c_num,
+            "soga": soga,
+            "limit": limit,
+            "actual": actual,
+            "calc_fee": calc_fee,
+            "manual_add": manual_add,
+            "fraction": fraction,
+            "stage_sum": stage_sum,
+            "stage_borne": stage_borne
+        })
+        
+        main_total += stage_sum
+        borne_main_total += stage_borne
 
-    # 피신청인 부담비율 적용 (본안비용 * 부담비율)
-    burden_rate = Decimal(str(options.get('burden_rate', 100))) / Decimal("100")
-    borne_main_total = int((Decimal(main_total) * burden_rate).to_integral_value(rounding=ROUND_FLOOR))
-
-    # 신청사건 비용 (인지: 전자 900원 / 종이 1,000원)
-    # 신청사건 송달료 공식: 당사자수(신청인 1명 + 피신청인 N명) × 3회분 × 5,640원
+    # 신청사건 비용
     resp_count = options.get('respondent_count', 1)
     app_stamp = 900 if options.get('electronic', True) else 1_000
     app_delivery = (resp_count + 1) * 3 * DELIVERY_UNIT
@@ -174,12 +200,12 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
 
     final_total = borne_main_total + application_total
     provisional = any(r["actual"] is None for r in rows)
+    is_all_won = all(r['fraction'] == Fraction(1, 1) for r in rows)
 
     return dict(rows=rows, filing_rows=filing_rows, main_total=main_total,
                 borne_main_total=borne_main_total, application_total=application_total,
                 app_stamp=app_stamp, app_delivery=app_delivery, total=final_total,
-                provisional=provisional, burden_rate=options.get('burden_rate', 100),
-                respondent_count=resp_count)
+                provisional=provisional, respondent_count=resp_count, is_all_won=is_all_won)
 
 
 def application_sections(cases, model, options):
@@ -189,12 +215,12 @@ def application_sections(cases, model, options):
     date_text = (f"이 판결은 {options['final_date'].strip()} 확정되었습니다."
                  if options['final_date'].strip() else '')
     amount = won(model['total'])
-    burden_rate = model['burden_rate']
+    is_all_won = model['is_all_won']
     
     prayer = (f'위 당사자 사이의 {references} {name} 사건의 판결에 의하여 피신청인이 신청인에게 '
               f'상환해야 할 소송비용액은 금 {amount}임을 확정한다.\n라는 결정을 구합니다.')
 
-    if burden_rate == 100:
+    if is_all_won:
         if options['role'] == '피고':
             opening = (f'신청인(피고, 이하 신청인이라고 함)을 상대로 피신청인(원고, 이하 피신청인이라고 함)이 제기한 '
                        f'{references} {name} 사건에서 최종적으로 신청인에 대한 피신청인의 청구가 모두 기각되어 '
@@ -214,7 +240,7 @@ def application_sections(cases, model, options):
             opening = (f'신청인(원고, 이하 신청인이라고 함)이 피신청인(피고, 이하 피신청인이라고 함)을 상대로 제기한 '
                        f'{references} {name} 사건에서 최종적으로 일부승소 판결이 선고되었습니다. ')
             action = '제기·수행'
-        burden_text = f'위 사건의 소송비용 중 피신청인의 부담비율은 {burden_rate}%로 정하여졌으므로'
+        burden_text = '위 사건들의 각 판결에서 정해진 피신청인의 소송비용 부담비율을 적용하여 산정하였으므로'
 
     cause = (
         f'1. {opening}{date_text}\n\n'
@@ -227,9 +253,9 @@ def application_sections(cases, model, options):
 
 
 def calculation_sections(cases, model, options):
-    before = ['1. 신청인의 지출비용']
+    before = ['1. 신청인의 지출비용 및 피신청인 부담액']
     
-    # 심급별 소가 및 변호사보수
+    # 심급별 지출비용 및 분수 부담액 적용 산출
     for index, row in enumerate(model['rows']):
         prefix = '가나다'[index]
         stage_title = f"{prefix}. {row['stage']}심 ({row['number']})"
@@ -239,35 +265,28 @@ def calculation_sections(cases, model, options):
         before.append(f"   - 변호사보수: 금 {won(row['calc_fee'])}{actual_str}")
         before.append(f"   - 최대인정보수 산식: {fee_formula(row['soga'], options.get('is_reduced', False))}")
 
-    # 인지대 / 송달료 지출내역
-    for entry in model['filing_rows']:
-        if entry['include']:
-            before.append(f"- {entry['stage']}심 인지대: 금 {won(entry['stamp'])} / 송달료: 금 {won(entry['delivery'])}")
+        f_entry = next((f for f in model['filing_rows'] if f['number'] == row['number']), None)
+        if f_entry and f_entry['include']:
+            before.append(f"   - 인지대: 금 {won(f_entry['stamp'])} / 송달료: 금 {won(f_entry['delivery'])}")
             
-    before.append('본안 소송비용 합계: 금 ' + won(model['main_total']))
+        if row['manual_add'] > 0:
+            before.append(f"   - 기타 수기 추가 비용: 금 {won(row['manual_add'])}")
+            
+        before.append(f"   => {row['stage']}심 지출 합계: 금 {won(row['stage_sum'])}")
+        
+        frac = row['fraction']
+        if frac == Fraction(1, 1):
+            before.append(f"   => 피신청인 부담비율(전부) 적용: 금 {won(row['stage_borne'])}")
+        else:
+            before.append(f"   => 피신청인 부담비율({frac.numerator}/{frac.denominator}) 적용: 금 {won(row['stage_borne'])}")
+        before.append("")
 
-    burden_rate = model['burden_rate']
     after = ['2. 소송비용액 산정']
-    if burden_rate == 100:
-        after.append('가. 신청인의 본안 소송비용: 금 ' + won(model['main_total']))
-    else:
-        after.append(f"가. 신청인의 본안 소송비용: 금 {won(model['main_total'])}")
-        after.append(f"나. 피신청인 부담비율({burden_rate}%) 적용 본안비용: 금 {won(model['main_total'])} × {burden_rate}% = 금 {won(model['borne_main_total'])}")
+    after.append(f"가. 본안 소송비용 중 피신청인 부담액 합계: 금 {won(model['borne_main_total'])}")
+    after.append(f"나. 소송비용액확정신청에 따른 인지대 금 {won(model['app_stamp'])} 및 송달료 금 {won(model['app_delivery'])} (신청인 1명 + 피신청인 {model['respondent_count']}명 기준)")
+    after.append("다. 피신청인이 신청인에게 상환해야 할 소송비용액은,")
+    after.append(f"{won(model['borne_main_total'])} + {won(model['application_total'])} = {won(model['total'])}    끝.")
     
-    label_next = '나.' if burden_rate == 100 else '다.'
-    label_final = '다.' if burden_rate == 100 else '라.'
-    after.append(f"{label_next} 소송비용액확정신청에 따른 인지대 금 {won(model['app_stamp'])} 및 송달료 금 {won(model['app_delivery'])} (신청인 1명 + 피신청인 {model['respondent_count']}명 기준)")
-    
-    if burden_rate == 100:
-        after.extend([
-            f"{label_final} 소송비용은 피신청인의 부담이므로 피신청인이 신청인에게 상환해야 할 소송비용액은,",
-            f"{won(model['main_total'])} + {won(model['application_total'])} = {won(model['total'])}    끝.",
-        ])
-    else:
-        after.extend([
-            f"{label_final} 피신청인이 신청인에게 상환해야 할 소송비용액은,",
-            f"{won(model['borne_main_total'])} + {won(model['application_total'])} = {won(model['total'])}    끝.",
-        ])
     notes = []
     return before, after, notes
 
@@ -381,18 +400,16 @@ def main():
         auto_app_delivery = auto_rounds * DELIVERY_UNIT
         st.info(f"📌 **신청 비용 자동 계산 내역**\n\n- 인지대: **{won(auto_app_stamp)}** (전자 기준)\n- 송달료: **{won(auto_app_delivery)}** (신청인 1명 + 피신청인 {respondent_count}명 = {total_parties}명 × 3회분({auto_rounds}회분) × 5,640원)")
 
-    # 일부승소 부담비율 입력
-    burden_rate = st.slider('피신청인 소송비용 부담비율(%)', min_value=1, max_value=100, value=100, step=1,
-                            help='전부승소는 100%입니다. 판결 주문에 따라 부담 비율을 조절하세요 (예: 피고 70% 부담 시 70).')
-    
-    is_reduced = st.checkbox('무변론 판결, 자백간주, 이행권고결정에 따른 변호사보수 1/2 감액 적용 (규칙 제5조)')
+    # 공통 감액 옵션
+    is_reduced = st.checkbox('무변론 판결, 자백간주, 이행권고결정에 따른 변호사보수 1/2 감액 일괄 적용 (규칙 제5조)')
 
-    # 심급별 소가 및 실제 보수, 인지/송달료 입력
+    # 심급별 소가 및 실제 보수, 분수 부담비율, 추가 수기 금액 입력
     st.markdown("---")
-    st.subheader("심급별 소가 및 비용 설정")
+    st.subheader("심급별 세부 비용 및 부담비율 설정")
     soga_dict = {}
     actual_fees = {}
     filing_costs = {}
+    stage_settings = {}
 
     if cases:
         for case in cases:
@@ -411,6 +428,20 @@ def main():
                     actual_fees[prefix] = optional_money(fee_val)
                 except ValueError as exc:
                     error = str(exc)
+
+            # 심급별 분수 부담비율 및 추가 수기 금액
+            col1, col2 = st.columns(2)
+            with col1:
+                frac_str = st.text_input(f'{stage}심 피신청인 부담비율 (분수 입력)', value='1/1', key=f'frac_{prefix}', help="예: 전부승소는 '1/1', 3분의 1 부담은 '1/3'")
+                try:
+                    stage_fraction = parse_fraction(frac_str)
+                except ValueError as exc:
+                    error = str(exc)
+                    stage_fraction = Fraction(1, 1)
+            with col2:
+                manual_add = int(st.number_input(f'{stage}심 기타 수기 추가 비용(원)', min_value=0, value=0, step=10_000, key=f'manual_{prefix}', help="감정료, 서기료 등 추가로 산입할 비용을 원 단위로 입력하세요."))
+            
+            stage_settings[prefix] = {'fraction': stage_fraction, 'manual_add': manual_add}
 
             # 인지대 송달료
             include = st.checkbox(f'신청인이 납부한 {stage}심 인지대·송달료 포함',
@@ -440,7 +471,8 @@ def main():
         
     options = dict(electronic=electronic, party_count=party_count,
                    role=role, case_name=case_name, final_date=final_date,
-                   is_reduced=is_reduced, respondent_count=respondent_count, burden_rate=burden_rate)
+                   is_reduced=is_reduced, respondent_count=respondent_count, 
+                   stage_settings=stage_settings)
     
     signature = repr((cases, raw, soga_dict, actual_fees, filing_costs, options))
     
@@ -466,10 +498,11 @@ def main():
     model = saved[1]
     st.success("✅ 계산서 작성이 완료되었습니다.")
     st.metric('최종 상환액 합계', won(model['total']))
-    if model['burden_rate'] == 100:
+    
+    if model['is_all_won']:
         st.caption(f"본안 비용 {won(model['main_total'])} + 비용확정신청 비용 {won(model['application_total'])}")
     else:
-        st.caption(f"본안 지출액 {won(model['main_total'])} 중 {model['burden_rate']}% 부담액 {won(model['borne_main_total'])} + 비용확정신청 비용 {won(model['application_total'])}")
+        st.caption(f"본안 지출액 {won(model['main_total'])} 중 부담비율 적용액 {won(model['borne_main_total'])} + 비용확정신청 비용 {won(model['application_total'])}")
         
     if model['provisional']:
         st.caption('실제 보수를 입력하지 않은 심급은 법정 한도액이 반영되었습니다.')
