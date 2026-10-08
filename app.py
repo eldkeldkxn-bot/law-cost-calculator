@@ -267,26 +267,22 @@ def application_sections(cases, model, options):
         raise ValueError('신청인이 상환받을 잔액이 없어 신청서를 생성할 수 없습니다.')
     prayer = (f'위 당사자 사이의 {references} {name} 사건의 판결에 의하여 피신청인이 신청인에게 '
               f'상환해야 할 소송비용액은 금 {won(claim_amount)}임을 확정한다.\n라는 결정을 구합니다.')
-    outcomes = []
-    for c in cases:
-        key = c['number'] or f"stage_{c['stage']}"
-        result = options.get('judgment_results', {}).get(key, '판결 결과 미입력')
-        reference = f"{c['court']} {c['number']}".strip() or f"{c['stage']}심"
-        outcomes.append(f"{reference} {name}: {result}")
-    order = options.get('cost_order', '').strip()
-    if not order:
-        raise ValueError('적용할 소송비용 부담 주문을 입력해주세요.')
-    action = '응소·수행' if options['role'] == '피고' else '제기·수행'
-    offset_mention = (' 당사자 쌍방의 부담비용은 민사소송법 제112조에 따른 상계를 반영하였습니다.'
-                      if model.get('use_offset') else '')
+    is_all_won = model['is_all_won']
+    if is_all_won:
+        opening = f'신청인({options["role"]})을 상대로 피신청인이 제기한 {references} {name} 사건에서 최종적으로 전부승소하였습니다. ' if options['role'] == '피고' else f'신청인({options["role"]})이 피신청인을 상대로 제기한 {references} {name} 사건에서 최종적으로 전부승소하였습니다. '
+        action = '응소' if options['role'] == '피고' else '제기·수행'
+        burden_text = '위 사건의 소송비용은 피신청인이 전액 부담하도록 정하여졌으므로'
+    else:
+        opening = f'신청인({options["role"]})을 상대로 피신청인이 제기한 {references} {name} 사건에서 최종적으로 일부승소 판결이 선고되었습니다. ' if options['role'] == '피고' else f'신청인({options["role"]})이 피신청인을 상대로 제기한 {references} {name} 사건에서 최종적으로 일부승소 판결이 선고되었습니다. '
+        action = '응소' if options['role'] == '피고' else '제기·수행'
+        burden_text = '위 사건들의 각 판결에서 정해진 피신청인의 소송비용 부담비율을 적용하여 산정하였으므로'
+
+    offset_mention = " 또한, 당사자 쌍방의 부담액에 관하여 민사소송법 제112조에 따라 대등액에서 상계하고 남은 잔액을 청구합니다." if model.get('use_offset') else ""
+
     cause = (
-        f'1. 신청인은 본안사건의 {options["role"]}이며, 각 심급의 판결 결과는 다음과 같습니다.\n'
-        + '\n'.join(outcomes) + f'\n{date_text}\n\n'
-        f'2. 이 신청에서 적용하는 소송비용 부담 주문은 다음과 같습니다.\n{order}\n\n'
-        f'3. 신청인은 위 사건을 {action}하기 위하여 {lawyer}을 소송대리인으로 선임하였으며, '
-        f'상환을 구하는 비용은 별지 소송비용액계산서와 같습니다.\n\n'
-        f'4. 위 소송비용 부담 주문에 따른 부담비율을 적용하여 비용을 산정하였습니다.'
-        f'{offset_mention} 신청인은 별지와 같은 금원의 상환을 구하기 위하여 이 사건 신청에 이르렀습니다.'
+        f'1. {opening}{date_text}\n\n'
+        f'2. 신청인은 위 사건을 {action}하기 위하여 {lawyer}을 소송대리인으로 선임하였으며, 상환을 구하는 비용은 별지 소송비용액계산서와 같습니다.\n\n'
+        f'3. {burden_text},{offset_mention} 신청인은 별지와 같은 금원의 상환을 구하기 위하여 이 사건 신청에 이르렀습니다.'
     )
     return prayer, cause
 
@@ -673,7 +669,6 @@ def main():
     actual_fees = {}
     filing_costs = {}
     stage_settings = {}
-    judgment_results = {}
 
     for case in cases:
         c_num = case['number']
@@ -682,15 +677,6 @@ def main():
         court_info = f" ({case['court']} {c_num})".strip() if (case['court'] or c_num) else ""
         st.markdown(f"#### 🏛️ {stage}심{court_info}")
         
-        results = (['청구 전부 기각', '청구 일부 인용·일부 기각', '청구 전부 인용', '직접 입력']
-                   if role == '피고' else ['청구 전부 인용', '청구 일부 인용·일부 기각', '청구 전부 기각', '직접 입력'])
-        if stage > 1:
-            results = ['직접 입력', '항소 기각', '상고 기각', '원심판결 일부 변경', '원심판결 취소', '파기환송']
-        result = st.selectbox(f'{stage}심 판결 결과 (비용 부담비율과 별도)', results, key=f'result_{role}_{c_key}')
-        if result == '직접 입력':
-            result = st.text_input(f'{stage}심 판결 결과 직접 입력', key=f'result_text_{c_key}',
-                                   placeholder='예: 피신청인의 항소를 기각한다.')
-        judgment_results[c_key] = result
         reduced = st.checkbox(f'{stage}심 신청인 변호사보수 1/2 감액 적용 (규칙 제5조)',
                               key=f'reduced_{c_key}',
                               help='피고의 전부자백·자백간주 판결, 무변론 판결, 이행권고결정 등 해당 심급에만 선택합니다.')
@@ -739,10 +725,6 @@ def main():
         filing_costs[c_key] = entry
         st.divider()
 
-    cost_order = st.text_area('적용할 소송비용 부담 주문',
-                              placeholder='예: 소송총비용은 피고가 부담한다. / 소송총비용 중 1/3은 원고가, 나머지는 피고가 부담한다.',
-                              help='판결 주문을 그대로 입력하세요. 상급심에서 전체 비용 부담을 다시 정했다면 그 주문에 맞춰 위 심급별 비율도 입력하세요.')
-    st.caption('입력한 주문은 문서에 그대로 들어갑니다. 계산은 위에서 입력한 심급별 비율로 하며 주문을 자동 해석하지 않습니다.')
     st.caption('소송대리인: 법무법인(유한)바른')
     opp_settings = {}
     with st.expander('⚖️ 상대방 소송비용 상계(대등액 공제) 시뮬레이션 (선택)'):
@@ -800,7 +782,7 @@ def main():
         
     options = dict(electronic=electronic, party_count=party_count,
                    role=role, case_name=case_name, final_date=final_date,
-                   judgment_results=judgment_results, cost_order=cost_order, respondent_count=respondent_count, 
+                   respondent_count=respondent_count, 
                    stage_settings=stage_settings, use_offset=use_offset, opp_settings=opp_settings,
                    output_format=output_format)
     
@@ -810,10 +792,6 @@ def main():
         try:
             if error:
                 raise ValueError(error)
-            if not cost_order.strip():
-                raise ValueError('소송비용 부담 주문을 입력해주세요.')
-            if any(not value.strip() for value in judgment_results.values()):
-                raise ValueError('각 심급의 판결 결과를 입력해주세요.')
             model = make_model(cases, soga_dict, actual_fees, filing_costs, options)
         except ValueError as exc:
             st.error(str(exc))
