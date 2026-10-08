@@ -202,7 +202,7 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
     provisional = any(r["actual"] is None for r in rows)
     is_all_won = all(r['fraction'] == Fraction(1, 1) for r in rows)
 
-    # 상대방 소송비용 상계 계산 (Expander 옵션)
+    # 상대방 소송비용 상계 계산
     use_offset = options.get('use_offset', False)
     opp_rows = []
     opp_total = 0
@@ -215,7 +215,9 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
             stage = case["stage"]
             soga = soga_dict.get(c_num, 0)
             settings = stage_settings.get(c_num, {'fraction': Fraction(1, 1)})
-            # 신청인 부담비율 = 1 - 피신청인 부담비율
+            
+            # 법리적 상계 계산: 신청인 부담비율 = (1 - 피신청인 부담비율)
+            # 예: 피신청인이 1/3 부담이면, 신청인은 2/3 부담 -> 상대방 비용의 2/3를 내가 물어줘야 함
             app_burden_fraction = max(Fraction(0, 1), Fraction(1, 1) - settings['fraction'])
             
             o_entry = opp_settings.get(c_num, {})
@@ -230,6 +232,8 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
             o_manual = o_entry.get('manual', 0)
             
             o_sum = o_calc_fee + o_stamp + o_delivery + o_manual
+            
+            # 내가 상대방에게 물어줘야 할 비용 (상계액)
             o_borne = int(Decimal(o_sum) * Decimal(app_burden_fraction.numerator) / Decimal(app_burden_fraction.denominator))
             
             opp_rows.append({
@@ -257,7 +261,6 @@ def application_sections(cases, model, options):
     date_text = (f"이 판결은 {options['final_date'].strip()} 확정되었습니다."
                  if options['final_date'].strip() else '')
     
-    # 상계 옵션 적용 시 상계 후 금액을 청구취지에 반영
     claim_amount = model['offset_final'] if model.get('use_offset') and model['offset_final'] > 0 else model['total']
     amount = won(claim_amount)
     is_all_won = model['is_all_won']
@@ -444,13 +447,12 @@ def main():
                                           value=1 if electronic else 2, step=1,
                                           help='본안 소송의 송달료 계산 기준 인원수입니다.'))
 
-    # 소송비용확정 신청사건 상대방 수 및 송달료 자동계산
     st.markdown("---")
     st.subheader("소송비용액확정 신청 비용 설정")
     resp_col1, resp_col2 = st.columns([1, 2])
     with resp_col1:
         respondent_count = int(st.number_input('상대방(피신청인) 수', min_value=1, value=1, step=1,
-                                               help='피신청인 수에 따라 신청사건 송달료(당사자수 × 3회분 × 5,640원)가 자동 산출됩니다.'))
+                                               help='피신청인 수에 따라 신청사건 송달료가 자동 산출됩니다.'))
     with resp_col2:
         auto_app_stamp = 900 if electronic else 1_000
         total_parties = respondent_count + 1
@@ -458,10 +460,8 @@ def main():
         auto_app_delivery = auto_rounds * DELIVERY_UNIT
         st.info(f"📌 **신청 비용 자동 계산 내역**\n\n- 인지대: **{won(auto_app_stamp)}** (전자 기준)\n- 송달료: **{won(auto_app_delivery)}** (신청인 1명 + 피신청인 {respondent_count}명 = {total_parties}명 × 3회분({auto_rounds}회분) × 5,640원)")
 
-    # 공통 감액 옵션
     is_reduced = st.checkbox('무변론 판결, 자백간주, 이행권고결정에 따른 변호사보수 1/2 감액 일괄 적용 (규칙 제5조)')
 
-    # 심급별 소가 및 비용 설정
     st.markdown("---")
     st.subheader("심급별 세부 비용 및 부담비율 설정")
     soga_dict = {}
@@ -496,7 +496,7 @@ def main():
                     error = str(exc)
                     stage_fraction = Fraction(1, 1)
             with col2:
-                manual_add = int(st.number_input(f'{stage}심 기타 수기 추가 비용(원)', min_value=0, value=0, step=10_000, key=f'manual_{prefix}', help="감정료, 서기료 등 추가로 산입할 비용을 원 단위로 입력하세요."))
+                manual_add = int(st.number_input(f'{stage}심 기타 수기 추가 비용(원)', min_value=0, value=0, step=10_000, key=f'manual_{prefix}'))
             
             stage_settings[prefix] = {'fraction': stage_fraction, 'manual_add': manual_add}
 
@@ -527,6 +527,12 @@ def main():
         use_offset = st.checkbox('상대방 소송비용 상계 계산 활성화', value=False)
         if use_offset and cases:
             st.caption("상대방(피신청인)이 지출한 비용을 산정하여, 신청인이 부담해야 할 액수만큼 대등액에서 공제한 최종 수령액을 도출합니다.")
+            
+            # 🔥 [UI 개선] 전부승소 상태일 때 강력한 경고문 출력
+            is_all_won = all(stage_settings.get(c['number'], {}).get('fraction', Fraction(1, 1)) == Fraction(1, 1) for c in cases)
+            if is_all_won:
+                st.warning("⚠️ **현재 피신청인 부담비율이 '1/1(전부승소)'입니다.**\n\n전부승소 시 신청인이 물어줘야 할 상대방 소송비용은 **0%**이므로, 여기서 비용을 입력하셔도 상계액이 0원으로 계산됩니다. 상계 기능을 확인하시려면 위쪽 심급별 입력창에서 부담비율을 **'1/2'**나 **'1/3'** 등으로 수정해주세요.")
+                
             if role == '피고':
                 st.info("💡 신청인이 **피고**이므로, 상대방(원고)이 납부한 **1심 인지대·송달료가 자동으로 체크**되어 반영됩니다.")
                 
@@ -547,7 +553,6 @@ def main():
                 with col_of2:
                     opp_manual_val = int(st.number_input(f'{stage}심 상대방 기타 비용(원)', min_value=0, value=0, step=10_000, key=f'opp_man_{prefix}'))
                 
-                # 상대방 원고 시(신청인 피고) 1심 인지·송달료 자동 체크
                 opp_include = st.checkbox(f'상대방이 납부한 {stage}심 인지대·송달료 포함',
                                           value=(role == '피고' and stage == 1),
                                           key=f'opp_paid_{prefix}')
@@ -601,7 +606,6 @@ def main():
     model = saved[1]
     st.success("✅ 계산서 작성이 완료되었습니다.")
     
-    # 상계 결과 메트릭 표기
     if model.get('use_offset'):
         col_m1, col_m2 = st.columns(2)
         with col_m1:
