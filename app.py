@@ -170,7 +170,6 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
         manual_add = settings['manual_add']
         
         stage_sum = calc_fee + stamp + delivery + manual_add
-        # 10원 미만 절사 적용
         stage_borne = trunc_10(Decimal(stage_sum) * Decimal(fraction.numerator) / Decimal(fraction.denominator))
         
         rows.append({
@@ -202,7 +201,7 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
     provisional = any(r["actual"] is None for r in rows)
     is_all_won = all(r['fraction'] == Fraction(1, 1) for r in rows)
 
-    # 상대방 소송비용 상계 계산
+    # 상계 로직
     use_offset = options.get('use_offset', False)
     opp_rows = []
     opp_total = 0
@@ -215,7 +214,6 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
             stage = case["stage"]
             soga = soga_dict.get(c_num, 0)
             settings = stage_settings.get(c_num, {'fraction': Fraction(1, 1)})
-            
             app_burden_fraction = max(Fraction(0, 1), Fraction(1, 1) - settings['fraction'])
             
             o_entry = opp_settings.get(c_num, {})
@@ -232,13 +230,7 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
             o_sum = o_calc_fee + o_stamp + o_delivery + o_manual
             o_borne = trunc_10(Decimal(o_sum) * Decimal(app_burden_fraction.numerator) / Decimal(app_burden_fraction.denominator))
             
-            opp_rows.append({
-                "stage": stage,
-                "number": c_num,
-                "opp_sum": o_sum,
-                "app_fraction": app_burden_fraction,
-                "opp_borne": o_borne
-            })
+            opp_rows.append({"stage": stage, "number": c_num, "opp_sum": o_sum, "app_fraction": app_burden_fraction, "opp_borne": o_borne})
             opp_total += o_borne
         
         offset_final = final_total - opp_total
@@ -256,51 +248,103 @@ def application_sections(cases, model, options):
     lawyer = LAW_FIRM
     date_text = (f"이 판결은 {options['final_date'].strip()} 확정되었습니다."
                  if options['final_date'].strip() else '')
-    
     is_all_won = model['is_all_won']
+    claim_amount = model['offset_final'] if model.get('use_offset') and model['offset_final'] > 0 else model['total']
     
     prayer = (f'위 당사자 사이의 {references} {name} 사건의 판결에 의하여 피신청인이 신청인에게 '
-              f'상환해야 할 소송비용액은 금 {won(model["offset_final"] if model.get("use_offset") and model["offset_final"] > 0 else model["total"])}임을 확정한다.\n라는 결정을 구합니다.')
+              f'상환해야 할 소송비용액은 금 {won(claim_amount)}임을 확정한다.\n라는 결정을 구합니다.')
 
     if is_all_won:
-        if options['role'] == '피고':
-            opening = (f'신청인(피고, 이하 신청인이라고 함)을 상대로 피신청인(원고, 이하 피신청인이라고 함)이 제기한 '
-                       f'{references} {name} 사건에서 최종적으로 신청인에 대한 피신청인의 청구가 모두 기각되어 '
-                       '신청인이 전부승소하였습니다. ')
-            action = '응소'
-        else:
-            opening = (f'신청인(원고, 이하 신청인이라고 함)이 피신청인(피고, 이하 피신청인이라고 함)을 상대로 제기한 '
-                       f'{references} {name} 사건에서 최종적으로 신청인의 청구가 모두 인용되어 신청인이 전부승소하였습니다. ')
-            action = '제기·수행'
+        opening = f'신청인({options["role"]})을 상대로 피신청인이 제기한 {references} {name} 사건에서 최종적으로 전부승소하였습니다. ' if options['role'] == '피고' else f'신청인({options["role"]})이 피신청인을 상대로 제기한 {references} {name} 사건에서 최종적으로 전부승소하였습니다. '
+        action = '응소' if options['role'] == '피고' else '제기·수행'
         burden_text = '위 사건의 소송비용은 피신청인이 전액 부담하도록 정하여졌으므로'
     else:
-        if options['role'] == '피고':
-            opening = (f'신청인(피고, 이하 신청인이라고 함)을 상대로 피신청인(원고, 이하 피신청인이라고 함)이 제기한 '
-                       f'{references} {name} 사건에서 최종적으로 일부승소 판결이 선고되었습니다. ')
-            action = '응소'
-        else:
-            opening = (f'신청인(원고, 이하 신청인이라고 함)이 피신청인(피고, 이하 피신청인이라고 함)을 상대로 제기한 '
-                       f'{references} {name} 사건에서 최종적으로 일부승소 판결이 선고되었습니다. ')
-            action = '제기·수행'
+        opening = f'신청인({options["role"]})을 상대로 피신청인이 제기한 {references} {name} 사건에서 최종적으로 일부승소 판결이 선고되었습니다. ' if options['role'] == '피고' else f'신청인({options["role"]})이 피신청인을 상대로 제기한 {references} {name} 사건에서 최종적으로 일부승소 판결이 선고되었습니다. '
+        action = '응소' if options['role'] == '피고' else '제기·수행'
         burden_text = '위 사건들의 각 판결에서 정해진 피신청인의 소송비용 부담비율을 적용하여 산정하였으므로'
 
-    offset_mention = ""
-    if model.get('use_offset'):
-        offset_mention = " 또한, 당사자 쌍방의 부담액에 관하여 민사소송법 제114조에 따라 대등액에서 상계하고 남은 잔액을 청구합니다."
+    offset_mention = " 또한, 당사자 쌍방의 부담액에 관하여 민사소송법 제114조에 따라 대등액에서 상계하고 남은 잔액을 청구합니다." if model.get('use_offset') else ""
 
     cause = (
         f'1. {opening}{date_text}\n\n'
-        f'2. 신청인은 위 사건을 {action}하기 위하여 {lawyer}을 소송대리인으로 선임하였으며, '
-        '상환을 구하는 비용은 별지 소송비용액계산서와 같습니다.\n\n'
-        f'3. {burden_text},{offset_mention} '
-        f'신청인은 별지와 같은 금원의 상환을 구하기 위하여 이 사건 신청에 이르렀습니다.'
+        f'2. 신청인은 위 사건을 {action}하기 위하여 {lawyer}을 소송대리인으로 선임하였으며, 상환을 구하는 비용은 별지 소송비용액계산서와 같습니다.\n\n'
+        f'3. {burden_text},{offset_mention} 신청인은 별지와 같은 금원의 상환을 구하기 위하여 이 사건 신청에 이르렀습니다.'
     )
     return prayer, cause
 
 
-def calculation_sections(cases, model, options):
-    before = ['1. 신청인의 지출비용 및 피신청인 부담액']
+def generate_table_data(cases, model, options):
+    """표(법원 서식) 렌더링용 데이터 구조 생성"""
+    table_rows = []
     
+    for row in model['rows']:
+        stage_str = f"{row['stage']}심\n({row['number']})"
+        stage_rows = []
+        
+        # 1. 변호사보수 및 비고(산식) 생성
+        formula_str = fee_formula(row['soga'], options.get('is_reduced', False))
+        if row['actual'] is not None and row['actual'] < row['limit']:
+            note = f"규칙 제3조에 의거 산정하면 {formula_str} = {won(row['limit'])}이나, 실제 지급한 변호사보수를 소송비용으로 산입함"
+        elif row['actual'] is not None:
+            note = f"규칙 제3조에 의거 산정하면 {formula_str} = {won(row['limit'])}\n실제 지급한 변호사 보수 {won(row['actual'])}"
+        else:
+            note = f"규칙 제3조에 의거 산정: {formula_str} = {won(row['limit'])}"
+            
+        stage_rows.append({'비목': '변호사보수', '비용액': won(row['calc_fee']), '비고': note})
+        
+        # 2. 인지대/송달료/기타수기
+        if row['stamp']:
+            stage_rows.append({'비목': '인지대', '비용액': won(row['stamp']), '비고': ''})
+        if row['delivery']:
+            stage_rows.append({'비목': '송달료', '비용액': won(row['delivery']), '비고': ''})
+        if row['manual_add']:
+            stage_rows.append({'비목': row['manual_name'], '비용액': won(row['manual_add']), '비고': ''})
+            
+        # 3. 소계 및 부담비율
+        stage_rows.append({'비목': '소계', '비용액': won(row['stage_sum']), '비고': ''})
+        
+        frac = row['fraction']
+        frac_str = f"{frac.numerator}/{frac.denominator}" if frac != Fraction(1, 1) else "100%"
+        stage_rows.append({'비목': '상대방부담비율', '비용액': frac_str, '비고': ''})
+        stage_rows.append({'비목': '상대방부담비용', '비용액': won(row['stage_borne']), '비고': ''})
+        
+        for i, sr in enumerate(stage_rows):
+            table_rows.append({
+                '심급': stage_str if i == 0 else '',
+                '비목': sr['비목'],
+                '비용액': sr['비용액'],
+                '비고': sr['비고'],
+                'merge_len': len(stage_rows) if i == 0 else 0
+            })
+            
+    # 신청비용 추가
+    app_rows = [
+        {'비목': '인지대', '비용액': won(model['app_stamp']), '비고': '소송비용확정신청'},
+        {'비목': '송달료', '비용액': won(model['app_delivery']), '비고': f"피신청인 {model['respondent_count']}명 기준"},
+        {'비목': '신청비용소계', '비용액': won(model['application_total']), '비고': ''}
+    ]
+    for i, ar in enumerate(app_rows):
+        table_rows.append({
+            '심급': '확정신청', '비목': ar['비목'], '비용액': ar['비용액'], '비고': ar['비고'],
+            'merge_len': len(app_rows) if i == 0 else 0
+        })
+        
+    # 합계 추가
+    total_amount = model['offset_final'] if model.get('use_offset') and model['offset_final'] > 0 else model['total']
+    total_note = f"본안비용 {won(model['borne_main_total'])} + 신청비용 {won(model['application_total'])}"
+    if model.get('use_offset'):
+        total_note += f"\n(상대방 비용 {won(model['opp_total'])} 상계 공제 적용)"
+        
+    table_rows.append({
+        '심급': '합계', '비목': '합계', '비용액': won(total_amount), '비고': total_note, 'merge_len': 1
+    })
+    
+    return table_rows
+
+
+def render_text_calculation(cases, model, options):
+    """기존 줄글 형태의 계산서 반환"""
+    before = ['1. 신청인의 지출비용 및 피신청인 부담액']
     for index, row in enumerate(model['rows']):
         prefix = '가나다라마바사'[index]
         stage_title = f"{prefix}. {row['stage']}심 ({row['number']})"
@@ -310,12 +354,9 @@ def calculation_sections(cases, model, options):
         before.append(f"   - 변호사보수: 금 {won(row['calc_fee'])}{actual_str}")
         before.append(f"   - 최대인정보수 산식: {fee_formula(row['soga'], options.get('is_reduced', False))}")
 
-        f_entry = next((f for f in model['filing_rows'] if f['number'] == row['number']), None)
-        if f_entry and f_entry['include']:
-            before.append(f"   - 인지대: 금 {won(f_entry['stamp'])} / 송달료: 금 {won(f_entry['delivery'])}")
-            
-        if row['manual_add'] > 0:
-            before.append(f"   - {row['manual_name']}: 금 {won(row['manual_add'])}")
+        if row['stamp']: before.append(f"   - 인지대: 금 {won(row['stamp'])}")
+        if row['delivery']: before.append(f"   - 송달료: 금 {won(row['delivery'])}")
+        if row['manual_add'] > 0: before.append(f"   - {row['manual_name']}: 금 {won(row['manual_add'])}")
             
         before.append(f"   => {row['stage']}심 지출 합계: 금 {won(row['stage_sum'])}")
         
@@ -395,10 +436,55 @@ def make_docx(cases, model, options, prayer, cause):
     doc.add_paragraph('별지')
     heading('소송비용액계산서')
     
-    before, after = calculation_sections(cases, model, options)
-    paragraphs(before)
-    doc.add_paragraph()
-    paragraphs(after)
+    use_table_format = options.get('output_format') == '표 양식 (법원 서식)'
+    
+    if use_table_format:
+        table_data = generate_table_data(cases, model, options)
+        table = doc.add_table(rows=len(table_data)+1, cols=4)
+        table.style = 'Table Grid'
+        
+        # 헤더 삽입
+        hdr_cells = table.rows[0].cells
+        for i, text in enumerate(['심급', '비목', '신청인 비용액', '비고']):
+            hdr_cells[i].text = text
+            hdr_cells[i].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in hdr_cells[i].paragraphs[0].runs:
+                run.font.name = '나눔명조'
+                run._r.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'), '나눔명조')
+                run.font.bold = True
+
+        # 데이터 삽입
+        row_idx = 1
+        for row in table_data:
+            cells = table.rows[row_idx].cells
+            cells[0].text = row['심급']
+            cells[1].text = row['비목']
+            cells[2].text = str(row['비용액'])
+            cells[3].text = row['비고']
+            
+            for cell in cells:
+                for p in cell.paragraphs:
+                    for run in p.runs:
+                        run.font.name = '나눔명조'
+                        run._r.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'), '나눔명조')
+                        run.font.size = Pt(10)
+            row_idx += 1
+            
+        # 심급 열(0번 인덱스) 세로 병합 처리
+        row_idx = 1
+        for row in table_data:
+            m_len = row.get('merge_len', 0)
+            if m_len > 1:
+                start_cell = table.cell(row_idx, 0)
+                end_cell = table.cell(row_idx + m_len - 1, 0)
+                start_cell.merge(end_cell)
+            row_idx += 1
+            
+    else:
+        before, after = render_text_calculation(cases, model, options)
+        paragraphs(before)
+        doc.add_paragraph()
+        paragraphs(after)
     
     output = BytesIO()
     doc.save(output)
@@ -408,7 +494,6 @@ def make_docx(cases, model, options, prayer, cause):
 def main():
     st.set_page_config(page_title='소송비용 신청서 만들기', page_icon='⚖️')
     
-    # 옅은 하늘색 버튼 CSS 주입
     st.markdown("""
     <style>
     [data-testid="stDownloadButton"] button {
@@ -427,6 +512,9 @@ def main():
     st.title('소송비용 신청서 만들기')
     st.caption('소송비용액확정 신청서 및 계산서 간편 생성기')
     
+    # 🎈 양식 선택 토글 추가
+    output_format = st.radio('📝 계산서 출력 양식', ['줄글 양식 (기본)', '표 양식 (법원 서식)'], horizontal=True)
+    
     case_column, name_column = st.columns([3, 1])
     with case_column:
         raw = st.text_area('1·2·3심 법원·사건번호',
@@ -443,7 +531,6 @@ def main():
         
     role = st.radio('신청인은 본안에서', ['피고', '원고'], horizontal=True)
     
-    # 변호사보수규칙 선택칸 삭제 후 컬럼 조정
     method_column, people_column = st.columns(2)
     with method_column:
         electronic = st.radio('제출 방식', ['전자소송', '종이소송'], horizontal=True) == '전자소송'
@@ -499,9 +586,8 @@ def main():
                     error = str(exc)
                     stage_fraction = Fraction(1, 1)
             with col2:
-                manual_name = st.text_input(f'{stage}심 수기 비용 항목명', value='기타 수기 비용', key=f'manual_name_{prefix}', help="예: 측량감정료, 증인여비")
+                manual_name = st.text_input(f'{stage}심 수기 비용 항목명', value='기타 수기 비용', key=f'manual_name_{prefix}')
             with col3:
-                # 🎈 기타 비용 입력 시 ? 툴팁 추가 ("0원 입력시 계산서 적용 안됨")
                 manual_add = int(st.number_input(f'{stage}심 기타 비용 금액(원)', min_value=0, value=0, step=10_000, key=f'manual_{prefix}', help="0원 입력시 계산서 적용 안됨"))
             
             stage_settings[prefix] = {'fraction': stage_fraction, 'manual_name': manual_name, 'manual_add': manual_add}
@@ -550,7 +636,6 @@ def main():
                         error = str(exc)
                         opp_fee_val = None
                 with col_of2:
-                    # 🎈 상대방 기타 비용 입력 시에도 ? 툴팁 추가
                     opp_manual_val = int(st.number_input(f'{stage}심 상대방 기타 비용(원)', min_value=0, value=0, step=10_000, key=f'opp_man_{prefix}', help="0원 입력시 계산서 적용 안됨"))
                 
                 opp_include = st.checkbox(f'상대방이 납부한 {stage}심 인지대·송달료 포함',
@@ -578,7 +663,8 @@ def main():
     options = dict(electronic=electronic, party_count=party_count,
                    role=role, case_name=case_name, final_date=final_date,
                    is_reduced=is_reduced, respondent_count=respondent_count, 
-                   stage_settings=stage_settings, use_offset=use_offset, opp_settings=opp_settings)
+                   stage_settings=stage_settings, use_offset=use_offset, opp_settings=opp_settings,
+                   output_format=output_format)
     
     signature = repr((cases, raw, soga_dict, actual_fees, filing_costs, options))
     
@@ -620,11 +706,20 @@ def main():
     
     st.subheader('별지 소송비용액계산서')
     
-    before, after = calculation_sections(cases, model, options)
-    for line in before:
-        st.write(line)
-    for line in after:
-        st.write(line)
+    if output_format == '표 양식 (법원 서식)':
+        # Streamlit 화면 상에서 표 미리보기 렌더링
+        table_data = generate_table_data(cases, model, options)
+        md_table = "| 심급 | 비목 | 신청인 비용액 | 비고 |\n|---|---|---|---|\n"
+        for row in table_data:
+            formatted_row = [str(item).replace("\n", "<br>") for item in [row['심급'], row['비목'], row['비용액'], row['비고']]]
+            md_table += "| " + " | ".join(formatted_row) + " |\n"
+        st.markdown(md_table, unsafe_allow_html=True)
+    else:
+        before, after = render_text_calculation(cases, model, options)
+        for line in before:
+            st.write(line)
+        for line in after:
+            st.write(line)
         
     args = (cases, model, options, prayer, cause)
     try:
