@@ -376,34 +376,56 @@ def generate_table_data(cases, model, options):
     return table_rows
 
 
-def offset_comparison(model):
-    """화면과 Word에 공통으로 사용하는 나란히 비교하는 상계표."""
+def offset_table_data(model):
     rows = []
     opponents = {r['stage']: r for r in model['opp_rows']}
-    def add(stage, item, left='', right=''):
-        rows.append({'심급': stage, '비목': item, '신청인 지출분': left, '상대방 지출분': right})
+    def group(label, items):
+        for i, (item, left, right, note) in enumerate(items):
+            rows.append(dict(심급=label if i == 0 else '', 비목=item, 비용액=left,
+                             상대방비용액=right, 비고=note, merge_len=len(items) if i == 0 else 0))
     for r in model['rows']:
         o = opponents[r['stage']]
-        stage = f"{r['stage']}심"
-        add(stage, '변호사보수 한도', won(r['limit']), won(o['limit']))
-        add(stage, '실제 보수', won(r['actual']) if r['actual'] is not None else '미입력: 한도 적용',
-            won(o['actual']) if o['actual'] is not None else '미입력: 한도 적용')
-        add(stage, '산입 변호사보수', won(r['calc_fee']), won(o['calc_fee']))
-        add(stage, '인지대', won(r['stamp']), won(o['stamp']))
-        add(stage, '송달료', won(r['delivery']), won(o['delivery']))
-        add(stage, '기타 비용', won(r['manual_add']), won(o['manual']))
-        add(stage, '소계', won(r['stage_sum']), won(o['opp_sum']))
         f, g = r['fraction'], o['app_fraction']
-        add(stage, '비용 부담비율', f"피신청인 {f.numerator}/{f.denominator}", f"신청인 {g.numerator}/{g.denominator}")
-        add(stage, '비율 적용 금액', won(r['stage_borne']), won(o['opp_borne']))
-        add(stage, '상계 후 차액', won(r['stage_borne'] - o['opp_borne']), '')
-    net = model['borne_main_total'] - model['opp_total']
-    add('합계', '본안 차액 합계', won(net))
-    add('신청비용', '인지대', won(model['app_stamp']))
-    add('신청비용', '송달료', won(model['app_delivery']))
-    add('신청비용', '신청비용 소계', won(model['application_total']))
-    add('최종', '최종 청구액' if model['offset_final'] > 0 else '상계 계산 결과', won(model['offset_final']))
+        def fee_note(x):
+            actual = won(x['actual']) if x['actual'] is not None else '미입력: 한도 적용'
+            return f"{fee_formula(x['soga'], x['is_reduced'])} = {won(x['limit'])}; 실제 보수 {actual}"
+        items = [('변호사보수', won(r['calc_fee']), won(o['calc_fee']),
+                  '신청인: ' + fee_note(r) + '\n상대방: ' + fee_note(o))]
+        for title, left, right in [('인지대', r['stamp'], o['stamp']), ('송달료', r['delivery'], o['delivery']),
+                                   ('기타 비용', r['manual_add'], o['manual'])]:
+            if left or right:
+                items.append((title, won(left), won(right), r['manual_name'] if title == '기타 비용' and left else ''))
+        items.extend([
+            ('소계', won(r['stage_sum']), won(o['opp_sum']), ''),
+            ('부담비율', f'{f.numerator}/{f.denominator}', f'{g.numerator}/{g.denominator}', '신청인 지출분: 피신청인 부담비율\n상대방 지출분: 신청인 부담비율'),
+            ('부담비용', won(r['stage_borne']), won(o['opp_borne']), ''),
+            ('상계 후 차액', won(r['stage_borne'] - o['opp_borne']), '', '신청인 지출분 부담비용 − 상대방 지출분 부담비용')])
+        group(f"{r['stage']}심", items)
+    group('소송비용액확정신청', [('인지대', won(model['app_stamp']), '', ''),
+                               ('송달료', won(model['app_delivery']), '', f"피신청인 {model['respondent_count']}명 기준"),
+                               ('신청비용소계', won(model['application_total']), '', '')])
+    group('합계', [('', won(model['offset_final']), '',
+                 f"본안 차액 {won(model['borne_main_total'] - model['opp_total'])} + 신청비용 {won(model['application_total'])}")])
     return rows
+
+
+def render_offset_table(model):
+    from html import escape
+    rows = offset_table_data(model)
+    html = '<table><thead><tr><th>심급</th><th>비목</th><th>신청인 지출분</th><th>상대방 지출분</th><th>비고</th></tr></thead><tbody>'
+    for row in rows:
+        html += '<tr>'
+        if row['심급'] == '합계':
+            html += '<td colspan="2" style="text-align:center;font-weight:bold">합계</td>'
+        else:
+            if row['merge_len']:
+                html += f'<td rowspan="{row["merge_len"]}" style="text-align:center">{escape(row["심급"])}</td>'
+            html += '<td>' + escape(row['비목']) + '</td>'
+        for key in ['비용액', '상대방비용액', '비고']:
+            align = 'left' if key == '비고' else 'right'
+            html += f'<td style="text-align:{align}">' + escape(row[key]).replace('\n', '<br>') + '</td>'
+        html += '</tr>'
+    st.markdown(html + '</tbody></table>', unsafe_allow_html=True)
 
 
 def render_text_calculation(cases, model, options):
@@ -510,46 +532,12 @@ def make_docx(cases, model, options, prayer, cause):
     
     use_table_format = options.get('output_format') == '표 양식 (법원 서식)'
     
-    if model.get('use_offset'):
-        data = offset_comparison(model)
-        headers = ['심급', '비목', '신청인 지출분', '상대방 지출분']
-        table = doc.add_table(rows=1, cols=4)
+    if use_table_format or model.get('use_offset'):
+        comparison = model.get('use_offset', False)
+        table_data = offset_table_data(model) if comparison else generate_table_data(cases, model, options)
+        table = doc.add_table(rows=len(table_data)+1, cols=5 if comparison else 4)
         table.style = 'Table Grid'
         table.autofit = False
-        widths = [Cm(1.8), Cm(4.2), Cm(5), Cm(5)]
-        for col, width in zip(table.columns, widths):
-            col.width = width
-        for i, label in enumerate(headers):
-            table.rows[0].cells[i].text = label
-        repeat = parse_xml(f'<w:tblHeader {nsdecls("w")}/>')
-        table.rows[0]._tr.get_or_add_trPr().append(repeat)
-        for row in data:
-            cells = table.add_row().cells
-            for i, key in enumerate(headers):
-                cells[i].text = row[key]
-        for idx, row in enumerate(table.rows):
-            row._tr.get_or_add_trPr().append(parse_xml(f'<w:cantSplit {nsdecls("w")}/>'))
-            strong = idx == 0 or data[idx-1]['비목'] in ['소계', '상계 후 차액', '본안 차액 합계', '최종 청구액']
-            for col, cell in enumerate(row.cells):
-                cell.width = widths[col]
-                cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
-                for para in cell.paragraphs:
-                    para.paragraph_format.space_after = Pt(3)
-                    para.paragraph_format.space_before = Pt(3)
-                    para.paragraph_format.line_spacing = 1.1
-                    para.alignment = WD_ALIGN_PARAGRAPH.RIGHT if col >= 2 and idx else WD_ALIGN_PARAGRAPH.CENTER
-                    for run in para.runs:
-                        run.font.size = Pt(10)
-                        run.font.bold = strong
-                if strong:
-                    cell._tc.get_or_add_tcPr().append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="F2F4F7"/>'))
-        doc.add_paragraph('최종 청구액 = 각 심급 상계 후 차액 합계 + 소송비용액확정 신청비용')
-    elif use_table_format:
-        table_data = generate_table_data(cases, model, options)
-        table = doc.add_table(rows=len(table_data)+1, cols=4)
-        table.style = 'Table Grid'
-        table.autofit = False
-        
         tblPr = table._tbl.tblPr
         cell_mar = parse_xml(
             f'<w:tblCellMar {nsdecls("w")}>'
@@ -561,9 +549,12 @@ def make_docx(cases, model, options, prayer, cause):
         )
         tblPr.append(cell_mar)
         
-        col_widths = [Cm(2.3), Cm(3.0), Cm(3.2), Cm(7.5)]
+        col_widths = ([Cm(1.7), Cm(2.1), Cm(2.6), Cm(2.6), Cm(7.0)] if comparison
+                      else [Cm(2.3), Cm(3.0), Cm(3.2), Cm(7.5)])
+        for col, width in zip(table.columns, col_widths):
+            col.width = width
 
-        headers = ['구분', '비목', '금액·비율', '비고']
+        headers = ['심급', '비목', '신청인 지출분', '상대방 지출분', '비고'] if comparison else ['구분', '비목', '금액·비율', '비고']
         hdr_row = table.rows[0]
         for i, text in enumerate(headers):
             cell = hdr_row.cells[i]
@@ -576,7 +567,11 @@ def make_docx(cases, model, options, prayer, cause):
             cells[0].text = row['심급']
             cells[1].text = row['비목']
             cells[2].text = str(row['비용액'])
-            cells[3].text = row['비고']
+            if comparison:
+                cells[3].text = row['상대방비용액']
+                cells[4].text = row['비고']
+            else:
+                cells[3].text = row['비고']
 
         row_idx = 1
         for row in table_data:
@@ -606,7 +601,8 @@ def make_docx(cases, model, options, prayer, cause):
 
         for r_idx, row_obj in enumerate(table.rows):
             for c_idx, cell in enumerate(row_obj.cells):
-                cell.width = col_widths[c_idx]
+                if not (r_idx > 0 and table_data[r_idx-1]['심급'] == '합계' and c_idx < 2):
+                    cell.width = col_widths[c_idx]
                 cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
                 
                 for p in cell.paragraphs:
@@ -624,9 +620,9 @@ def make_docx(cases, model, options, prayer, cause):
                     if r_idx == 0:
                         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                     else:
-                        if c_idx == 2:
+                        if c_idx == 2 or (comparison and c_idx == 3):
                             p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                        elif c_idx == 3:
+                        elif c_idx == (4 if comparison else 3):
                             p.alignment = WD_ALIGN_PARAGRAPH.LEFT
                         else:
                             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -887,7 +883,7 @@ def main():
         if model['offset_final'] < 0:
             st.info(f"계산상 신청인의 초과 부담액: {won(-model['offset_final'])}")
         st.subheader('상계 계산 내역 확인')
-        st.table(offset_comparison(model))
+        render_offset_table(model)
         return
     prayer, cause = application_sections(cases, model, options)
     prayer = st.text_area('신청취지 편집', value=prayer, height=180)
@@ -896,7 +892,7 @@ def main():
     st.subheader('별지 소송비용액계산서')
     
     if model.get('use_offset'):
-        st.table(offset_comparison(model))
+        render_offset_table(model)
         st.caption('최종 청구액 = 각 심급 상계 후 차액 합계 + 소송비용액확정 신청비용')
     elif output_format == '표 양식 (법원 서식)':
         table_data = generate_table_data(cases, model, options)
