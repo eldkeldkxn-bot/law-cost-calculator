@@ -37,15 +37,9 @@ DELIVERY_ROUNDS = {
     '드합': 15, '드단': 15, '르': 12, '므': 8
 }
 
-SPAN_ITEMS = {'소계', '신청비용소계', '본안비용소계', '합계'}
-
 
 def won(value):
     return f"{value:,}원"
-
-
-def num_str(value):
-    return f"{value:,}"
 
 
 def trunc_10(value):
@@ -205,6 +199,7 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
         rows.append({
             "stage": stage,
             "number": c_num,
+            "court": case["court"],
             "soga": soga,
             "limit": limit,
             "actual": actual,
@@ -230,10 +225,8 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
     provisional = any(r["actual"] is None for r in rows)
     is_all_won = all(r['fraction'] == Fraction(1, 1) for r in rows)
 
-    # 상대방 소송비용 데이터 산출
     use_offset = options.get('use_offset', False)
     hide_opp_in_doc = options.get('hide_opp_in_doc', False)
-    # 실제 문서(표/줄글/신청취지)에 피신청인 상계 내역을 반영할지 여부
     apply_offset_in_doc = use_offset and not hide_opp_in_doc
 
     opp_rows = []
@@ -408,7 +401,6 @@ def generate_table_data(cases, model, options):
                 'row_type': 'item'
             })
 
-        # 비목 행 개수 (법원 결정문처럼 '1심' 세로 병합은 비목 행들만 묶고 '소계'는 가로 2칸 병합)
         bimok_count = len(stage_rows)
 
         # 5. 소계
@@ -421,7 +413,6 @@ def generate_table_data(cases, model, options):
             'is_span_row': True
         })
 
-        # 일부승소이거나 상계 표시일 때만 부담비율/부담비용 행 추가 (전부승소 단독일 때는 법원 결정문처럼 깔끔하게 생략 가능하되 명확성을 위해 비율이 100%가 아닐 때나 상계 시 표시)
         if not is_all_won or show_opp:
             app_ratio_str = format_frac(row['fraction'])
             opp_ratio_str = format_frac(opp_row.get('app_fraction', Fraction(0, 1))) if opp_row else '-'
@@ -455,7 +446,7 @@ def generate_table_data(cases, model, options):
                 'row_type': sr.get('row_type', 'item')
             })
 
-    # 본안비용소계 행 (법원 결정문 양식에 맞춰 항상 표시)
+    # 본안비용소계 행
     prefix_app = "[신청인] " if show_opp else ""
     note_sub = prefix_app + " + ".join([f"{r['stage']}심 {won(r['stage_borne'])}" for r in model['rows']])
     if show_opp:
@@ -471,7 +462,7 @@ def generate_table_data(cases, model, options):
         'row_type': 'main_subtotal'
     })
 
-    # 소송비용확정신청 행 (인지대, 송달료 2행만 세로 병합하고 신청비용소계는 가로 2칸 병합)
+    # 소송비용확정신청 행
     app_bimok_rows = [
         {'비목': '인지대', 'app_val': won(model['app_stamp']), 'opp_val': '-', '비고': ''},
         {'비목': '송달료', 'app_val': won(model['app_delivery']), 'opp_val': '-', '비고': f"피신청인 {model['respondent_count']}명 기준 (잔액은 확정 후 환급)"},
@@ -526,14 +517,17 @@ def generate_table_data(cases, model, options):
 
 
 def render_html_table(cases, model, options):
-    """법원 결정문 스타일의 HTML 표 생성 (들여쓰기 코드블록 오작동 방지 적용)"""
+    """법원 결정문 스타일의 HTML 표 생성 (신청인 본안 사건번호 및 각 심급별 소가 반영)"""
     table_data = generate_table_data(cases, model, options)
     show_opp = model.get('apply_offset_in_doc', False)
 
+    # 1. 신청인 뒤에 들어갈 본안 사건번호 괄호 조합 (예: (2020가합511254, 특허법원 2022나2183))
     refs = [f"{c['court']} {c['number']}".strip() for c in cases if (c['court'] or c['number'])]
-    ref_str = ", ".join(refs) if refs else "본안사건"
+    ref_paren = f" ({', '.join(refs)})" if refs else ""
+
+    # 2. 각 심급별 소가 문구 조합 (예: 제1심 소가 : 293,222,576원, 제2심 소가 : 324,286,688원)
     soga_parts = [f"제{r['stage']}심 소가 : {won(r['soga'])}" for r in model['rows']]
-    soga_line = " / ".join(soga_parts)
+    soga_line = ", ".join(soga_parts)
 
     burden_lines = []
     for r in model['rows']:
@@ -617,7 +611,7 @@ def render_html_table(cases, model, options):
         '<div class="court-doc-card">'
         '<div class="court-doc-title">소 송 비 용 계 산 서</div>'
         '<div class="court-meta-box">'
-        f'<div><strong>신청인 :</strong> {html.escape(options["role"])} ({html.escape(ref_str)})</div>'
+        f'<div><strong>신청인 :</strong> {html.escape(options["role"])}{html.escape(ref_paren)}</div>'
         f'<div><strong>{html.escape(soga_line)}</strong></div>'
         f'<div class="court-burden-list">{burden_html}</div>'
         '</div>'
@@ -731,8 +725,18 @@ def make_docx(cases, model, options, prayer, cause):
     paragraphs(cause.split('\n'))
     doc.add_page_break()
 
+    # 별지 계산서 상단 메타정보 (법원 결정문 스타일 반영)
     doc.add_paragraph('별지')
     heading('소 송 비 용 계 산 서')
+    
+    refs_doc = [f"{c['court']} {c['number']}".strip() for c in cases if (c['court'] or c['number'])]
+    ref_paren_doc = f" ({', '.join(refs_doc)})" if refs_doc else ""
+    soga_parts_doc = [f"제{r['stage']}심 소가 : {won(r['soga'])}" for r in model['rows']]
+    soga_line_doc = ", ".join(soga_parts_doc)
+
+    doc.add_paragraph(f"신청인 : {options['role']}{ref_paren_doc}")
+    doc.add_paragraph(soga_line_doc)
+    doc.add_paragraph()
 
     use_table_format = options.get('output_format') == '표 양식 (법원 서식)'
     show_opp = model.get('apply_offset_in_doc', False)
@@ -759,7 +763,6 @@ def make_docx(cases, model, options, prayer, cause):
 
         if show_opp:
             col_widths = [Cm(2.1), Cm(2.5), Cm(2.7), Cm(2.7), Cm(6.0)]
-            # 2단 헤더 구성 (비용액 -> 신청인 | 피신청인)
             r0 = table.rows[0].cells
             r1 = table.rows[1].cells
             r0[0].text = '심급'
@@ -771,7 +774,7 @@ def make_docx(cases, model, options, prayer, cause):
 
             r0[0].merge(r1[0])
             r0[1].merge(r1[1])
-            r0[2].merge(r0[3])
+            r0[2].merge(r1[3])
             r0[4].merge(r1[4])
 
             for h_idx in range(hdr_rows_count):
@@ -787,7 +790,6 @@ def make_docx(cases, model, options, prayer, cause):
                 shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="F1F5F9"/>')
                 cell._tc.get_or_add_tcPr().append(shd)
 
-        # 본문 데이터 입력
         for r_idx, row in enumerate(table_data):
             t_row_idx = r_idx + hdr_rows_count
             cells = table.rows[t_row_idx].cells
@@ -800,7 +802,6 @@ def make_docx(cases, model, options, prayer, cause):
             else:
                 cells[3].text = row['비고']
 
-        # 셀 병합 및 음영 처리
         for r_idx, row in enumerate(table_data):
             t_row_idx = r_idx + hdr_rows_count
             m_len = row.get('merge_len', 0)
@@ -827,7 +828,6 @@ def make_docx(cases, model, options, prayer, cause):
                     shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{fill_hex}"/>')
                     table.cell(t_row_idx, c_i)._tc.get_or_add_tcPr().append(shd)
 
-        # 폰트 및 정렬 일괄 적용
         for r_idx, row_obj in enumerate(table.rows):
             is_header = r_idx < hdr_rows_count
             data_row = table_data[r_idx - hdr_rows_count] if not is_header else None
