@@ -526,7 +526,7 @@ def generate_table_data(cases, model, options):
 
 
 def render_html_table(cases, model, options):
-    """법원 결정문 스타일의 HTML 표 생성 (셀 병합, 우측 정렬, 음영 완벽 지원)"""
+    """법원 결정문 스타일의 HTML 표 생성 (들여쓰기 코드블록 오작동 방지 적용)"""
     table_data = generate_table_data(cases, model, options)
     show_opp = model.get('apply_offset_in_doc', False)
 
@@ -539,64 +539,50 @@ def render_html_table(cases, model, options):
     for r in model['rows']:
         stage_label = {1: "소송비용", 2: "항소비용", 3: "상고비용"}.get(r['stage'], f"{r['stage']}심 비용")
         if r['fraction'] == Fraction(1, 1):
-            burden_lines.append(f"▶ {stage_label}은 피신청인({ '원고' if options['role']=='피고' else '피고' })이 부담")
+            burden_lines.append(f"▶ {stage_label}은 피신청인({'원고' if options['role']=='피고' else '피고'})이 부담")
         else:
             burden_lines.append(f"▶ {stage_label} 중 {format_frac(r['fraction'])}은 피신청인이 부담")
     burden_html = "<br>".join(burden_lines)
 
-    # 헤더 구성 (단독 4열 vs 쌍방 5열 2단 헤더)
     if show_opp:
-        colgroup_html = """
-        <colgroup>
-            <col style="width: 11%;">
-            <col style="width: 14%;">
-            <col style="width: 14%;">
-            <col style="width: 14%;">
-            <col style="width: 47%;">
-        </colgroup>
-        """
-        thead_html = """
-        <thead>
-            <tr>
-                <th rowspan="2">심급</th>
-                <th rowspan="2">비목</th>
-                <th colspan="2">비용액</th>
-                <th rowspan="2">비고</th>
-            </tr>
-            <tr>
-                <th>신청인</th>
-                <th>피신청인</th>
-            </tr>
-        </thead>
-        """
+        colgroup_html = (
+            '<colgroup>'
+            '<col style="width: 11%;">'
+            '<col style="width: 14%;">'
+            '<col style="width: 14%;">'
+            '<col style="width: 14%;">'
+            '<col style="width: 47%;">'
+            '</colgroup>'
+        )
+        thead_html = (
+            '<thead>'
+            '<tr><th rowspan="2">심급</th><th rowspan="2">비목</th><th colspan="2">비용액</th><th rowspan="2">비고</th></tr>'
+            '<tr><th>신청인</th><th>피신청인</th></tr>'
+            '</thead>'
+        )
     else:
-        colgroup_html = """
-        <colgroup>
-            <col style="width: 12%;">
-            <col style="width: 16%;">
-            <col style="width: 18%;">
-            <col style="width: 54%;">
-        </colgroup>
-        """
-        thead_html = """
-        <thead>
-            <tr>
-                <th>심급</th>
-                <th>비목</th>
-                <th>비용액</th>
-                <th>비고</th>
-            </tr>
-        </thead>
-        """
+        colgroup_html = (
+            '<colgroup>'
+            '<col style="width: 12%;">'
+            '<col style="width: 16%;">'
+            '<col style="width: 18%;">'
+            '<col style="width: 54%;">'
+            '</colgroup>'
+        )
+        thead_html = (
+            '<thead>'
+            '<tr><th>심급</th><th>비목</th><th>비용액</th><th>비고</th></tr>'
+            '</thead>'
+        )
 
     tbody_rows = []
     for row in table_data:
         r_type = row.get('row_type', 'item')
         tr_class = {
             'item': '',
-            'subtotal': 'class="row-subtotal"',
-            'main_subtotal': 'class="row-main-subtotal"',
-            'grand_total': 'class="row-grand-total"'
+            'subtotal': ' class="row-subtotal"',
+            'main_subtotal': ' class="row-main-subtotal"',
+            'grand_total': ' class="row-grand-total"'
         }.get(r_type, '')
 
         tds = []
@@ -611,52 +597,40 @@ def render_html_table(cases, model, options):
             bimok_html = html.escape(row['비목']).replace('\n', '<br>')
             tds.append(f'<td class="cell-center">{bimok_html}</td>')
 
-        # 신청인 금액
         app_v = str(row['app_val'])
         app_cls = "cell-right" if app_v.endswith("원") else "cell-center"
         tds.append(f'<td class="{app_cls}">{html.escape(app_v)}</td>')
 
-        # 피신청인 금액 (표시할 때만)
         if show_opp:
             opp_v = str(row['opp_val'])
             opp_cls = "cell-right" if opp_v.endswith("원") else "cell-center"
             tds.append(f'<td class="{opp_cls}">{html.escape(opp_v)}</td>')
 
-        # 비고
         note_html = html.escape(row['비고']).replace('\n', '<br>')
         tds.append(f'<td class="cell-left">{note_html}</td>')
 
-        tbody_rows.append(f"<tr {tr_class}>{''.join(tds)}</tr>")
+        tbody_rows.append(f'<tr{tr_class}>{"".join(tds)}</tr>')
 
     claim_amount = model['offset_final'] if show_opp and model['offset_final'] > 0 else model['total']
-    reimburse_html = f"""
-    <div class="court-reimburse-box">
-        2. 피신청인이 신청인에게 상환하여야 할 소송비용액 금 {won(claim_amount)}
-    </div>
-    """
 
-    full_html = f"""
-    <div class="court-doc-card">
-        <div class="court-doc-title">소 송 비 용 계 산 서</div>
-        <div class="court-meta-box">
-            <div><strong>신청인 :</strong> {html.escape(options['role'])} ({html.escape(ref_str)})</div>
-            <div><strong>{html.escape(soga_line)}</strong></div>
-            <div class="court-burden-list">{burden_html}</div>
-        </div>
-        <div class="court-table-topbar">
-            <span class="sec-label">1. 총 소송비용</span>
-            <span class="unit-label">(단위 : 원, 10원 미만 버림)</span>
-        </div>
-        <table class="court-cost-table">
-            {colgroup_html}
-            {thead_html}
-            <tbody>
-                {''.join(tbody_rows)}
-            </tbody>
-        </table>
-        {reimburse_html}
-    </div>
-    """
+    full_html = (
+        '<div class="court-doc-card">'
+        '<div class="court-doc-title">소 송 비 용 계 산 서</div>'
+        '<div class="court-meta-box">'
+        f'<div><strong>신청인 :</strong> {html.escape(options["role"])} ({html.escape(ref_str)})</div>'
+        f'<div><strong>{html.escape(soga_line)}</strong></div>'
+        f'<div class="court-burden-list">{burden_html}</div>'
+        '</div>'
+        '<div class="court-table-topbar">'
+        '<span class="sec-label">1. 총 소송비용</span>'
+        '<span class="unit-label">(단위 : 원, 10원 미만 버림)</span>'
+        '</div>'
+        f'<table class="court-cost-table">{colgroup_html}{thead_html}<tbody>{"".join(tbody_rows)}</tbody></table>'
+        '<div class="court-reimburse-box">'
+        f'2. 피신청인이 신청인에게 상환하여야 할 소송비용액 금 {won(claim_amount)}'
+        '</div>'
+        '</div>'
+    )
     return full_html
 
 
