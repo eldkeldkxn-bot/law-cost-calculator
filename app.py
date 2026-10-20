@@ -592,10 +592,12 @@ def generate_table_data(cases, model, options):
             })
 
     # 본안비용소계 행 (신청비용이 포함될 때만 중간 소계로 표시)
+    app_stage_expr = " + ".join([f"{r['stage']}심 {won(r['stage_borne'])}" for r in model['rows']])
+    opp_stage_expr = " + ".join([f"{r['stage']}심 {won(r['opp_borne'])}" for r in model['opp_rows']])
     prefix_app = "[신청인] " if show_opp else ""
-    note_sub = prefix_app + " + ".join([f"{r['stage']}심 {won(r['stage_borne'])}" for r in model['rows']])
+    note_sub = prefix_app + app_stage_expr
     if show_opp:
-        note_sub += "\n[피신청인] " + " + ".join([f"{r['stage']}심 {won(r['opp_borne'])}" for r in model['opp_rows']])
+        note_sub += "\n[피신청인] " + opp_stage_expr
 
     if not exclude_app_cost:
         table_rows.append({
@@ -638,10 +640,10 @@ def generate_table_data(cases, model, options):
             'row_type': 'subtotal'
         })
 
-    # 최종 합계 행
+    # 최종 합계 행 (SyntaxError 방지 처리 완료)
     if show_opp:
         if exclude_app_cost:
-            total_note = f"[신청인] 본안비용 합계 ({' + '.join([f'{r[\"stage\"]}심 {won(r[\"stage_borne\"])}' for r in model['rows']])})"
+            total_note = f"[신청인] 본안비용 합계 ({app_stage_expr})"
         else:
             total_note = f"[신청인] 본안비용 {won(model['borne_main_total'])} + 신청비용 {won(model['application_total'])}"
         total_note += f"\n[피신청인] 본안비용 {won(model['opp_total'])}"
@@ -651,7 +653,7 @@ def generate_table_data(cases, model, options):
             total_note += f"\n▶ 대등액 상계 결과 신청인 초과부담: {won(abs(model['offset_final']))}"
     else:
         if exclude_app_cost:
-            total_note = f"본안비용 합계 ({note_sub})"
+            total_note = f"본안비용 합계 ({app_stage_expr})"
         else:
             total_note = f"본안비용 {won(model['borne_main_total'])} + 신청비용 {won(model['application_total'])}"
 
