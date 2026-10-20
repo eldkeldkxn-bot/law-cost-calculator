@@ -35,7 +35,7 @@ LAW_FIRM = '법무법인(유한)바른'
 DELIVERY_ROUNDS = {
     '가합': 15, '가단': 15, '가소': 10, '나': 12, '다': 8,
     '구합': 15, '구단': 15, '누': 12, '두': 8,
-    '드합': 15, '드단': 15, '르': 2, '므': 8
+    '드합': 15, '드단': 15, '르': 12, '므': 8
 }
 
 COURT_CARD_CSS = """
@@ -169,7 +169,7 @@ def won(value):
 
 
 def trunc_1(value):
-    """1원 미만 버림 (원 단위 절사)"""
+    """1원 미만 버림 (소수점 이하만 버리고 1원 단위까지 보존)"""
     return int(Decimal(value).to_integral_value(rounding=ROUND_FLOOR))
 
 
@@ -204,7 +204,7 @@ def fee_limit(soga):
     for upper, lower, base, rate in BRACKETS:
         if upper is None or soga <= upper:
             value = Decimal(base) + Decimal(soga - lower) * Decimal(rate)
-            return int(value.to_integral_value(rounding=ROUND_FLOOR))
+            return trunc_1(value)
     return 0
 
 
@@ -283,6 +283,7 @@ def filing_estimate(soga, case, electronic=True, party_count=1):
 
 def make_model(cases, soga_dict, actual_fees, filing_costs, options):
     is_reduced = options.get('is_reduced', False)
+    exclude_app_cost = options.get('exclude_app_cost', False)
     stage_settings = options.get('stage_settings', {})
 
     rows = []
@@ -300,7 +301,7 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
 
         limit = fee_limit(soga)
         if is_reduced:
-            limit = limit // 2
+            limit = trunc_1(Decimal(limit) / Decimal(2))
 
         actual = actual_fees.get(c_key)
         if actual is not None and actual < 0:
@@ -320,7 +321,7 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
         manual_add = settings['manual_add']
 
         stage_sum = calc_fee + stamp + delivery + manual_add
-        # 1원 미만 버림 적용
+        # 1원 미만 버림 (1원 단위까지 정확히 계산)
         stage_borne = trunc_1(Decimal(stage_sum) * Decimal(fraction.numerator) / Decimal(fraction.denominator))
 
         rows.append({
@@ -344,9 +345,14 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
         borne_main_total += stage_borne
 
     resp_count = options.get('respondent_count', 1)
-    app_stamp = 900 if options.get('electronic', True) else 1_000
-    app_delivery = (resp_count + 1) * 3 * DELIVERY_UNIT
-    application_total = app_stamp + app_delivery
+    if exclude_app_cost:
+        app_stamp = 0
+        app_delivery = 0
+        application_total = 0
+    else:
+        app_stamp = 900 if options.get('electronic', True) else 1_000
+        app_delivery = (resp_count + 1) * 3 * DELIVERY_UNIT
+        application_total = app_stamp + app_delivery
 
     final_total = borne_main_total + application_total
     provisional = any(r["actual"] is None for r in rows)
@@ -371,7 +377,7 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
         o_entry = opp_settings.get(c_key, {})
         o_limit = fee_limit(soga)
         if is_reduced:
-            o_limit = o_limit // 2
+            o_limit = trunc_1(Decimal(o_limit) / Decimal(2))
         o_actual = o_entry.get('fee')
         o_calc_fee = o_limit if o_actual is None else min(o_limit, o_actual)
 
@@ -380,7 +386,7 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
         o_manual = o_entry.get('manual', 0)
 
         o_sum = o_calc_fee + o_stamp + o_delivery + o_manual
-        # 1원 미만 버림 적용
+        # 1원 미만 버림 (1원 단위까지 정확히 계산)
         o_borne = trunc_1(Decimal(o_sum) * Decimal(app_burden_fraction.numerator) / Decimal(app_burden_fraction.denominator))
 
         opp_rows.append({
@@ -406,6 +412,7 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
         borne_main_total=borne_main_total, application_total=application_total,
         app_stamp=app_stamp, app_delivery=app_delivery, total=final_total,
         provisional=provisional, respondent_count=resp_count, is_all_won=is_all_won,
+        exclude_app_cost=exclude_app_cost,
         use_offset=use_offset, hide_opp_in_doc=hide_opp_in_doc,
         apply_offset_in_doc=apply_offset_in_doc,
         opp_rows=opp_rows, opp_total=opp_total, offset_final=offset_final
@@ -447,10 +454,11 @@ def application_sections(cases, model, options):
 
 
 def generate_table_data(cases, model, options):
-    """표 데이터 생성 (피신청인 표시 여부에 따라 4열 또는 5열 호환)"""
+    """표 데이터 생성 (피신청인 표시 여부 및 신청비용 제외 옵션 호환)"""
     table_rows = []
     show_opp = model.get('apply_offset_in_doc', False)
     is_all_won = model.get('is_all_won', True)
+    exclude_app_cost = model.get('exclude_app_cost', False)
 
     for idx, row in enumerate(model['rows']):
         stage_str = f"{row['stage']}심"
@@ -531,12 +539,21 @@ def generate_table_data(cases, model, options):
 
         bimok_count = len(stage_rows)
 
-        # 5. 소계
+        # 5. 소계 (합산 계산식 표시)
+        sum_parts = [won(row['calc_fee'])]
+        if row['stamp'] > 0:
+            sum_parts.append(won(row['stamp']))
+        if row['delivery'] > 0:
+            sum_parts.append(won(row['delivery']))
+        if row['manual_add'] > 0:
+            sum_parts.append(won(row['manual_add']))
+        subtotal_note = " + ".join(sum_parts) if len(sum_parts) > 1 else ""
+
         stage_rows.append({
             '비목': '소계',
             'app_val': won(row['stage_sum']),
             'opp_val': won(opp_row['opp_sum']) if (show_opp and opp_row) else '-',
-            '비고': '',
+            '비고': subtotal_note,
             'row_type': 'subtotal',
             'is_span_row': True
         })
@@ -556,7 +573,7 @@ def generate_table_data(cases, model, options):
                 '비목': '상대방부담비용',
                 'app_val': won(row['stage_borne']),
                 'opp_val': won(opp_row['opp_borne']) if (show_opp and opp_row) else '-',
-                '비고': f"{won(row['stage_sum'])} × {app_ratio_str} (1원 미만 버림)",
+                '비고': f"{won(row['stage_sum'])} × {app_ratio_str} = {won(row['stage_borne'])} (1원 미만 버림)",
                 'row_type': 'subtotal',
                 'is_span_row': True
             })
@@ -574,61 +591,69 @@ def generate_table_data(cases, model, options):
                 'row_type': sr.get('row_type', 'item')
             })
 
-    # 본안비용소계 행
+    # 본안비용소계 행 (신청비용이 포함될 때만 중간 소계로 표시)
     prefix_app = "[신청인] " if show_opp else ""
     note_sub = prefix_app + " + ".join([f"{r['stage']}심 {won(r['stage_borne'])}" for r in model['rows']])
     if show_opp:
         note_sub += "\n[피신청인] " + " + ".join([f"{r['stage']}심 {won(r['opp_borne'])}" for r in model['opp_rows']])
-    table_rows.append({
-        '심급': '본안비용소계',
-        '비목': '',
-        'app_val': won(model['borne_main_total']),
-        'opp_val': won(model['opp_total']) if show_opp else '-',
-        '비고': note_sub,
-        'merge_len': 0,
-        'is_span_row': True,
-        'row_type': 'main_subtotal'
-    })
 
-    # 소송비용확정신청 행
-    app_bimok_rows = [
-        {'비목': '인지대', 'app_val': won(model['app_stamp']), 'opp_val': '-', '비고': ''},
-        {'비목': '송달료', 'app_val': won(model['app_delivery']), 'opp_val': '-', '비고': f"피신청인 {model['respondent_count']}명 기준 (잔액은 확정 후 환급)"},
-    ]
-    for i, ar in enumerate(app_bimok_rows):
+    if not exclude_app_cost:
         table_rows.append({
-            '심급': '소송비용\n확정신청' if i == 0 else '',
-            '비목': ar['비목'],
-            'app_val': ar['app_val'],
-            'opp_val': ar['opp_val'],
-            '비고': ar['비고'],
-            'merge_len': len(app_bimok_rows) if i == 0 else 0,
-            'is_span_row': False,
-            'row_type': 'item'
+            '심급': '본안비용소계',
+            '비목': '',
+            'app_val': won(model['borne_main_total']),
+            'opp_val': won(model['opp_total']) if show_opp else '-',
+            '비고': note_sub,
+            'merge_len': 0,
+            'is_span_row': True,
+            'row_type': 'main_subtotal'
         })
 
-    # 신청비용소계
-    table_rows.append({
-        '심급': '신청비용소계',
-        '비목': '',
-        'app_val': won(model['application_total']),
-        'opp_val': '-',
-        '비고': f"{won(model['app_stamp'])} + {won(model['app_delivery'])}",
-        'merge_len': 0,
-        'is_span_row': True,
-        'row_type': 'subtotal'
-    })
+        # 소송비용확정신청 행
+        app_bimok_rows = [
+            {'비목': '인지대', 'app_val': won(model['app_stamp']), 'opp_val': '-', '비고': ''},
+            {'비목': '송달료', 'app_val': won(model['app_delivery']), 'opp_val': '-', '비고': f"피신청인 {model['respondent_count']}명 기준 (잔액은 확정 후 환급)"},
+        ]
+        for i, ar in enumerate(app_bimok_rows):
+            table_rows.append({
+                '심급': '소송비용\n확정신청' if i == 0 else '',
+                '비목': ar['비목'],
+                'app_val': ar['app_val'],
+                'opp_val': ar['opp_val'],
+                '비고': ar['비고'],
+                'merge_len': len(app_bimok_rows) if i == 0 else 0,
+                'is_span_row': False,
+                'row_type': 'item'
+            })
+
+        # 신청비용소계
+        table_rows.append({
+            '심급': '신청비용소계',
+            '비목': '',
+            'app_val': won(model['application_total']),
+            'opp_val': '-',
+            '비고': f"{won(model['app_stamp'])} + {won(model['app_delivery'])}",
+            'merge_len': 0,
+            'is_span_row': True,
+            'row_type': 'subtotal'
+        })
 
     # 최종 합계 행
     if show_opp:
-        total_note = f"[신청인] 본안비용 {won(model['borne_main_total'])} + 신청비용 {won(model['application_total'])}"
+        if exclude_app_cost:
+            total_note = f"[신청인] 본안비용 합계 ({' + '.join([f'{r[\"stage\"]}심 {won(r[\"stage_borne\"])}' for r in model['rows']])})"
+        else:
+            total_note = f"[신청인] 본안비용 {won(model['borne_main_total'])} + 신청비용 {won(model['application_total'])}"
         total_note += f"\n[피신청인] 본안비용 {won(model['opp_total'])}"
         if model['offset_final'] >= 0:
             total_note += f"\n▶ 대등액 상계 후 최종 상환액: {won(model['offset_final'])}"
         else:
             total_note += f"\n▶ 대등액 상계 결과 신청인 초과부담: {won(abs(model['offset_final']))}"
     else:
-        total_note = f"본안비용 {won(model['borne_main_total'])} + 신청비용 {won(model['application_total'])}"
+        if exclude_app_cost:
+            total_note = f"본안비용 합계 ({note_sub})"
+        else:
+            total_note = f"본안비용 {won(model['borne_main_total'])} + 신청비용 {won(model['application_total'])}"
 
     table_rows.append({
         '심급': '합계',
@@ -645,7 +670,7 @@ def generate_table_data(cases, model, options):
 
 
 def render_html_table(cases, model, options):
-    """법원 결정문 스타일의 HTML 표 생성 (신청인 본안 사건번호 및 각 심급별 소가 반영)"""
+    """법원 결정문 스타일의 HTML 표 생성"""
     table_data = generate_table_data(cases, model, options)
     show_opp = model.get('apply_offset_in_doc', False)
 
@@ -759,6 +784,7 @@ def render_html_table(cases, model, options):
 def render_text_calculation(cases, model, options):
     """줄글 양식에도 표 양식과 동일하게 상세 계산식이 출력되도록 개선"""
     show_opp = model.get('apply_offset_in_doc', False)
+    exclude_app_cost = model.get('exclude_app_cost', False)
     before = ['1. 신청인의 지출비용 및 피신청인 부담액 (단위 : 원, 1원 미만 버림)']
 
     for index, row in enumerate(model['rows']):
@@ -802,14 +828,24 @@ def render_text_calculation(cases, model, options):
 
     after = ['2. 소송비용액 산정']
     stage_sum_expr = " + ".join([f"{r['stage']}심 {won(r['stage_borne'])}" for r in model['rows']])
-    after.append(f"가. 본안 소송비용 중 피신청인 부담액 합계: 금 {won(model['borne_main_total'])} ({stage_sum_expr})")
-    after.append(
-        f"나. 소송비용액확정신청 비용 합계: 금 {won(model['application_total'])} "
-        f"[인지대 {won(model['app_stamp'])} + 송달료 {won(model['app_delivery'])} (피신청인 {model['respondent_count']}명 기준)]"
-    )
-    after.append(
-        f"다. 본안 및 신청비용 합계: 본안비용 {won(model['borne_main_total'])} + 신청비용 {won(model['application_total'])} = 금 {won(model['total'])}"
-    )
+
+    if exclude_app_cost:
+        after.append(f"가. 본안 소송비용 중 피신청인 부담액 합계: 금 {won(model['borne_main_total'])} ({stage_sum_expr})")
+        if not show_opp:
+            after.append("나. 피신청인이 신청인에게 상환해야 할 소송비용액은,")
+            after.append(f"    금 {won(model['total'])}   끝.")
+    else:
+        after.append(f"가. 본안 소송비용 중 피신청인 부담액 합계: 금 {won(model['borne_main_total'])} ({stage_sum_expr})")
+        after.append(
+            f"나. 소송비용액확정신청 비용 합계: 금 {won(model['application_total'])} "
+            f"[인지대 {won(model['app_stamp'])} + 송달료 {won(model['app_delivery'])} (피신청인 {model['respondent_count']}명 기준)]"
+        )
+        after.append(
+            f"다. 본안 및 신청비용 합계: 본안비용 {won(model['borne_main_total'])} + 신청비용 {won(model['application_total'])} = 금 {won(model['total'])}"
+        )
+        if not show_opp:
+            after.append("라. 피신청인이 신청인에게 상환해야 할 소송비용액은,")
+            after.append(f"    금 {won(model['total'])}   끝.")
 
     if show_opp:
         after.append("")
@@ -820,9 +856,6 @@ def render_text_calculation(cases, model, options):
             after.append(f"나. 대등액 상계 후 피신청인이 상환해야 할 최종 잔액: 금 {won(model['total'])} − 금 {won(model['opp_total'])} = 금 {won(model['offset_final'])}   끝.")
         else:
             after.append(f"나. 대등액 상계 결과 (신청인의 초과 부담액 발생): 금 {won(model['total'])} − 금 {won(model['opp_total'])} = -금 {won(abs(model['offset_final']))}   끝.")
-    else:
-        after.append("라. 피신청인이 신청인에게 상환해야 할 소송비용액은,")
-        after.append(f"    금 {won(model['total'])}   끝.")
 
     return before, after
 
@@ -865,7 +898,6 @@ def render_pdf_download_button(html_card_content):
             opacity: 0.65;
             cursor: wait;
         }}
-        /* 캡처용 오프스크린 영역 (화면 밖에서 정밀 렌더링) */
         #offscreen-wrapper {{
             position: fixed;
             left: -9999px;
@@ -965,7 +997,7 @@ def make_docx(cases, model, options, prayer, cause):
     paragraphs(cause.split('\n'))
     doc.add_page_break()
 
-    # 별지 계산서 상단 메타정보 (법원 결정문 스타일 반영)
+    # 별지 계산서 상단 메타정보
     doc.add_paragraph('별지')
     heading('소 송 비 용 계 산 서')
     
@@ -1294,6 +1326,13 @@ def main():
         final_date = st.text_input('확정일', placeholder='예: 2026. 7. 21.')
         st.caption('입력하지 않으면 확정일 문장은 문서에 넣지 않습니다.')
 
+    # 확정일 바로 아래: 상대방 전달용 (확정신청 비용 제외) 옵션 추가
+    exclude_app_cost = st.checkbox(
+        '📨 상대방 전달용으로 만들기 (소송비용액확정 신청 인지대·송달료 제외)',
+        value=False,
+        help="법원에 확정신청서를 접수하기 전, 상대방에게 임의 변제 안내용으로 계산서를 전달할 때 체크하세요. 확정신청 인지대(900원)와 송달료가 제외된 본안 소송비용만 합산됩니다."
+    )
+
     st.markdown("---")
     output_format = st.radio('📝 계산서 출력 양식', ['표 양식 (법원 서식)', '줄글 양식 (기본)'], horizontal=True)
 
@@ -1302,7 +1341,7 @@ def main():
                    is_reduced=is_reduced, respondent_count=respondent_count,
                    stage_settings=stage_settings, use_offset=use_offset,
                    hide_opp_in_doc=hide_opp_in_doc, opp_settings=opp_settings,
-                   output_format=output_format)
+                   exclude_app_cost=exclude_app_cost, output_format=output_format)
 
     signature = repr((cases, raw, soga_dict, actual_fees, filing_costs, options))
 
@@ -1333,7 +1372,8 @@ def main():
             label_suffix = " (참고용·문서 미반영)" if model.get('hide_opp_in_doc') else ""
             st.metric(f'상계 후 예상 상환액{label_suffix}', won(model['offset_final']), delta=f"상대방 채권 공제: {delta_str}")
     else:
-        st.metric('최종 상환액 합계', won(model['total']))
+        metric_label = '최종 상환액 합계 (신청비용 제외·상대방 전달용)' if model.get('exclude_app_cost') else '최종 상환액 합계'
+        st.metric(metric_label, won(model['total']))
 
     prayer, cause = application_sections(cases, model, options)
     prayer = st.text_area('신청취지 편집', value=prayer, height=140)
