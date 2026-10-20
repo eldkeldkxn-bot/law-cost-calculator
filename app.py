@@ -7,6 +7,7 @@ from io import BytesIO
 import html
 import re
 import streamlit as st
+import streamlit.components.v1 as components
 from fractions import Fraction
 
 # 2020.12.28. 개정 변호사보수 규칙 별표
@@ -34,17 +35,142 @@ LAW_FIRM = '법무법인(유한)바른'
 DELIVERY_ROUNDS = {
     '가합': 15, '가단': 15, '가소': 10, '나': 12, '다': 8,
     '구합': 15, '구단': 15, '누': 12, '두': 8,
-    '드합': 15, '드단': 15, '르': 12, '므': 8
+    '드합': 15, '드단': 15, '르': 2, '므': 8
 }
+
+COURT_CARD_CSS = """
+.court-doc-card {
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 32px 36px;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
+    margin-top: 12px;
+    margin-bottom: 24px;
+    color: #0f172a;
+    font-family: 'Pretendard', 'Malgun Gothic', '맑은 고딕', serif;
+}
+.court-doc-title {
+    text-align: center;
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: 0.25em;
+    margin-bottom: 22px;
+    color: #0f172a;
+}
+.court-meta-box {
+    background: #f8fafc;
+    border-left: 4px solid #334155;
+    padding: 12px 16px;
+    font-size: 14px;
+    line-height: 1.6;
+    margin-bottom: 16px;
+    border-radius: 0 6px 6px 0;
+}
+.court-burden-list {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px dashed #cbd5e1;
+    color: #334155;
+    font-size: 13.5px;
+}
+.court-table-topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    margin-bottom: 6px;
+    font-size: 13.5px;
+}
+.court-table-topbar .sec-label {
+    font-weight: 700;
+    font-size: 14.5px;
+}
+.court-table-topbar .unit-label {
+    color: #64748b;
+    font-size: 12.5px;
+}
+.court-cost-table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    border-top: 2px solid #0f172a !important;
+    border-bottom: 2px solid #0f172a !important;
+    font-size: 13.5px !important;
+    table-layout: fixed !important;
+    background: #ffffff !important;
+}
+.court-cost-table th,
+.court-cost-table td {
+    border: 1px solid #cbd5e1 !important;
+    padding: 9px 12px !important;
+    vertical-align: middle !important;
+    word-break: keep-all !important;
+    line-height: 1.45 !important;
+}
+.court-cost-table thead th {
+    background-color: #f1f5f9 !important;
+    color: #0f172a !important;
+    font-weight: 700 !important;
+    text-align: center !important;
+    border-bottom: 1.5px solid #64748b !important;
+}
+.cell-stage {
+    background-color: #fcfcfd !important;
+    font-weight: 700 !important;
+    text-align: center !important;
+    color: #0f172a !important;
+}
+.cell-center {
+    text-align: center !important;
+}
+.cell-right {
+    text-align: right !important;
+    font-variant-numeric: tabular-nums !important;
+    font-weight: 500 !important;
+    white-space: nowrap !important;
+}
+.cell-left {
+    text-align: left !important;
+    color: #334155 !important;
+    font-size: 13px !important;
+}
+.row-subtotal td {
+    background-color: #f8fafc !important;
+    font-weight: 600 !important;
+}
+.row-main-subtotal td {
+    background-color: #f1f5f9 !important;
+    font-weight: 700 !important;
+    color: #0f172a !important;
+    border-top: 1.5px solid #94a3b8 !important;
+    border-bottom: 1.5px solid #94a3b8 !important;
+}
+.row-grand-total td {
+    background-color: #eff6ff !important;
+    font-weight: 700 !important;
+    color: #1e3a8a !important;
+    font-size: 14.5px !important;
+    border-top: 2px solid #2563eb !important;
+}
+.court-reimburse-box {
+    margin-top: 14px;
+    padding: 12px 16px;
+    background: #f8fafc;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font-weight: 700;
+    font-size: 14.5px;
+    color: #0f172a;
+}
+"""
 
 
 def won(value):
     return f"{value:,}원"
 
 
-def trunc_10(value):
-    """10원 미만 절사 (국고금 관리법 준용)"""
-    return (int(value) // 10) * 10
+def trunc_1(value):
+    """1원 미만 버림 (원 단위 절사)"""
+    return int(Decimal(value).to_integral_value(rounding=ROUND_FLOOR))
 
 
 def parse_fraction(text):
@@ -194,7 +320,8 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
         manual_add = settings['manual_add']
 
         stage_sum = calc_fee + stamp + delivery + manual_add
-        stage_borne = trunc_10(Decimal(stage_sum) * Decimal(fraction.numerator) / Decimal(fraction.denominator))
+        # 1원 미만 버림 적용
+        stage_borne = trunc_1(Decimal(stage_sum) * Decimal(fraction.numerator) / Decimal(fraction.denominator))
 
         rows.append({
             "stage": stage,
@@ -253,7 +380,8 @@ def make_model(cases, soga_dict, actual_fees, filing_costs, options):
         o_manual = o_entry.get('manual', 0)
 
         o_sum = o_calc_fee + o_stamp + o_delivery + o_manual
-        o_borne = trunc_10(Decimal(o_sum) * Decimal(app_burden_fraction.numerator) / Decimal(app_burden_fraction.denominator))
+        # 1원 미만 버림 적용
+        o_borne = trunc_1(Decimal(o_sum) * Decimal(app_burden_fraction.numerator) / Decimal(app_burden_fraction.denominator))
 
         opp_rows.append({
             "stage": stage,
@@ -334,9 +462,9 @@ def generate_table_data(cases, model, options):
         if row['actual'] is not None and row['actual'] < row['limit']:
             app_note = f"규칙 제3조 산정: {formula_str} = {won(row['limit'])}이나, 실제 지급한 변호사보수를 산입함"
         elif row['actual'] is not None:
-            app_note = f"변호사보수의 소송비용산입에 관한 규칙 제3조에 의거 산정하면\n{formula_str} (실제 지급액: {won(row['actual'])})"
+            app_note = f"변호사보수의 소송비용산입에 관한 규칙 제3조에 의거 산정하면\n{formula_str} = {won(row['limit'])} (실제 지급액: {won(row['actual'])})"
         else:
-            app_note = f"변호사보수의 소송비용산입에 관한 규칙 제3조에 의거 산정하면\n{formula_str}"
+            app_note = f"변호사보수의 소송비용산입에 관한 규칙 제3조에 의거 산정하면\n{formula_str} = {won(row['limit'])}"
 
         opp_val_str = '-'
         opp_note = ''
@@ -428,7 +556,7 @@ def generate_table_data(cases, model, options):
                 '비목': '상대방부담비용',
                 'app_val': won(row['stage_borne']),
                 'opp_val': won(opp_row['opp_borne']) if (show_opp and opp_row) else '-',
-                '비고': '',
+                '비고': f"{won(row['stage_sum'])} × {app_ratio_str} (1원 미만 버림)",
                 'row_type': 'subtotal',
                 'is_span_row': True
             })
@@ -485,7 +613,7 @@ def generate_table_data(cases, model, options):
         '비목': '',
         'app_val': won(model['application_total']),
         'opp_val': '-',
-        '비고': '',
+        '비고': f"{won(model['app_stamp'])} + {won(model['app_delivery'])}",
         'merge_len': 0,
         'is_span_row': True,
         'row_type': 'subtotal'
@@ -521,11 +649,11 @@ def render_html_table(cases, model, options):
     table_data = generate_table_data(cases, model, options)
     show_opp = model.get('apply_offset_in_doc', False)
 
-    # 1. 신청인 뒤에 들어갈 본안 사건번호 괄호 조합 (예: (2020가합511254, 특허법원 2022나2183))
+    # 1. 신청인 뒤에 들어갈 본안 사건번호 괄호 조합
     refs = [f"{c['court']} {c['number']}".strip() for c in cases if (c['court'] or c['number'])]
     ref_paren = f" ({', '.join(refs)})" if refs else ""
 
-    # 2. 각 심급별 소가 문구 조합 (예: 제1심 소가 : 293,222,576원, 제2심 소가 : 324,286,688원)
+    # 2. 각 심급별 소가 문구 조합
     soga_parts = [f"제{r['stage']}심 소가 : {won(r['soga'])}" for r in model['rows']]
     soga_line = ", ".join(soga_parts)
 
@@ -608,7 +736,7 @@ def render_html_table(cases, model, options):
     claim_amount = model['offset_final'] if show_opp and model['offset_final'] > 0 else model['total']
 
     full_html = (
-        '<div class="court-doc-card">'
+        '<div id="pdf-capture-target" class="court-doc-card">'
         '<div class="court-doc-title">소 송 비 용 계 산 서</div>'
         '<div class="court-meta-box">'
         f'<div><strong>신청인 :</strong> {html.escape(options["role"])}{html.escape(ref_paren)}</div>'
@@ -617,7 +745,7 @@ def render_html_table(cases, model, options):
         '</div>'
         '<div class="court-table-topbar">'
         '<span class="sec-label">1. 총 소송비용</span>'
-        '<span class="unit-label">(단위 : 원, 10원 미만 버림)</span>'
+        '<span class="unit-label">(단위 : 원, 1원 미만 버림)</span>'
         '</div>'
         f'<table class="court-cost-table">{colgroup_html}{thead_html}<tbody>{"".join(tbody_rows)}</tbody></table>'
         '<div class="court-reimburse-box">'
@@ -629,52 +757,164 @@ def render_html_table(cases, model, options):
 
 
 def render_text_calculation(cases, model, options):
+    """줄글 양식에도 표 양식과 동일하게 상세 계산식이 출력되도록 개선"""
     show_opp = model.get('apply_offset_in_doc', False)
-    before = ['1. 신청인의 지출비용 및 피신청인 부담액']
+    before = ['1. 신청인의 지출비용 및 피신청인 부담액 (단위 : 원, 1원 미만 버림)']
+
     for index, row in enumerate(model['rows']):
         prefix = '가나다라마바사'[index]
-        num_str = f" ({row['number']})" if row['number'] else ""
+        num_str = f" ({row['court']} {row['number']})".strip() if (row['court'] or row['number']) else ""
         stage_title = f"{prefix}. {row['stage']}심{num_str}"
-        before.append(f"{stage_title} 소가: 금 {won(row['soga'])}")
+        before.append(f"{stage_title} [소가: 금 {won(row['soga'])}]")
 
-        actual_str = f" (실제 지급액: 금 {won(row['actual'])})" if row['actual'] is not None else ""
-        before.append(f"   - 변호사보수: 금 {won(row['calc_fee'])}{actual_str}")
-        before.append(f"   - 최대인정보수 산식: {fee_formula(row['soga'], options.get('is_reduced', False))}")
+        formula_str = fee_formula(row['soga'], options.get('is_reduced', False))
+        if row['actual'] is not None and row['actual'] < row['limit']:
+            fee_calc_note = f"규칙 제3조 산정: {formula_str} = {won(row['limit'])}이나, 실제 지급한 변호사보수를 산입함"
+        elif row['actual'] is not None:
+            fee_calc_note = f"변호사보수의 소송비용산입에 관한 규칙 제3조 산정: {formula_str} = {won(row['limit'])} (실제 지급액: 금 {won(row['actual'])})"
+        else:
+            fee_calc_note = f"변호사보수의 소송비용산입에 관한 규칙 제3조 산정: {formula_str} = {won(row['limit'])}"
 
-        if row['stamp']:
+        before.append(f"   - 변호사보수: 금 {won(row['calc_fee'])}")
+        before.append(f"     ({fee_calc_note})")
+
+        sum_parts = [won(row['calc_fee'])]
+        if row['stamp'] > 0:
             before.append(f"   - 인지대: 금 {won(row['stamp'])}")
-        if row['delivery']:
-            before.append(f"   - 송달료: 금 {won(row['delivery'])}")
+            sum_parts.append(won(row['stamp']))
+        if row['delivery'] > 0:
+            before.append(f"   - 송달료: 금 {won(row['delivery'])} (실제 지출비용 산입)")
+            sum_parts.append(won(row['delivery']))
         if row['manual_add'] > 0:
             before.append(f"   - {row['manual_name']}: 금 {won(row['manual_add'])}")
+            sum_parts.append(won(row['manual_add']))
 
-        before.append(f"   => {row['stage']}심 지출 합계: 금 {won(row['stage_sum'])}")
+        sum_formula_str = f" ({' + '.join(sum_parts)})" if len(sum_parts) > 1 else ""
+        before.append(f"   => {row['stage']}심 지출 소계: 금 {won(row['stage_sum'])}{sum_formula_str}")
 
         frac = row['fraction']
+        ratio_str = format_frac(frac)
         if frac == Fraction(1, 1):
-            before.append(f"   => 피신청인 부담비율(전부) 적용: 금 {won(row['stage_borne'])}")
+            before.append(f"   => 피신청인 부담비용 (부담비율 {ratio_str}): {won(row['stage_sum'])} × 100% = 금 {won(row['stage_borne'])}")
         else:
-            before.append(f"   => 피신청인 부담비율({frac.numerator}/{frac.denominator}) 적용: 금 {won(row['stage_borne'])}")
+            before.append(f"   => 피신청인 부담비용 (부담비율 {ratio_str}): {won(row['stage_sum'])} × {frac.numerator}/{frac.denominator} = 금 {won(row['stage_borne'])} (1원 미만 버림)")
         before.append("")
 
     after = ['2. 소송비용액 산정']
-    after.append(f"가. 본안 소송비용 중 피신청인 부담액 합계: 금 {won(model['borne_main_total'])}")
-    after.append(f"나. 소송비용액확정신청 인지대 금 {won(model['app_stamp'])} 및 송달료 금 {won(model['app_delivery'])} (피신청인 {model['respondent_count']}명 기준)")
-    after.append(f"다. 본안 및 신청비용 합계: {won(model['borne_main_total'])} + {won(model['application_total'])} = 금 {won(model['total'])}")
+    stage_sum_expr = " + ".join([f"{r['stage']}심 {won(r['stage_borne'])}" for r in model['rows']])
+    after.append(f"가. 본안 소송비용 중 피신청인 부담액 합계: 금 {won(model['borne_main_total'])} ({stage_sum_expr})")
+    after.append(
+        f"나. 소송비용액확정신청 비용 합계: 금 {won(model['application_total'])} "
+        f"[인지대 {won(model['app_stamp'])} + 송달료 {won(model['app_delivery'])} (피신청인 {model['respondent_count']}명 기준)]"
+    )
+    after.append(
+        f"다. 본안 및 신청비용 합계: 본안비용 {won(model['borne_main_total'])} + 신청비용 {won(model['application_total'])} = 금 {won(model['total'])}"
+    )
 
     if show_opp:
         after.append("")
         after.append("3. 상대방 소송비용과의 대등액 상계 (민사소송법 제114조)")
-        after.append(f"가. 상대방 본안 소송비용 중 신청인 부담액 합계: 금 {won(model['opp_total'])}")
+        opp_stage_expr = " + ".join([f"{r['stage']}심 {won(r['opp_borne'])}" for r in model['opp_rows']])
+        after.append(f"가. 상대방 본안 소송비용 중 신청인 부담액 합계: 금 {won(model['opp_total'])} ({opp_stage_expr})")
         if model['offset_final'] >= 0:
             after.append(f"나. 대등액 상계 후 피신청인이 상환해야 할 최종 잔액: 금 {won(model['total'])} − 금 {won(model['opp_total'])} = 금 {won(model['offset_final'])}   끝.")
         else:
-            after.append(f"나. 대등액 상계 결과 (신청인의 초과 부담액 발생): 금 {won(abs(model['offset_final']))}   끝.")
+            after.append(f"나. 대등액 상계 결과 (신청인의 초과 부담액 발생): 금 {won(model['total'])} − 금 {won(model['opp_total'])} = -금 {won(abs(model['offset_final']))}   끝.")
     else:
         after.append("라. 피신청인이 신청인에게 상환해야 할 소송비용액은,")
         after.append(f"    금 {won(model['total'])}   끝.")
 
     return before, after
+
+
+def render_pdf_download_button(html_card_content):
+    """별지 계산서 HTML 그림 그대로 PDF로 다운로드하는 버튼 컴포넌트"""
+    component_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <meta charset="utf-8">
+    <style>
+        body {{
+            margin: 0;
+            padding: 0;
+            font-family: 'Pretendard', 'Malgun Gothic', '맑은 고딕', sans-serif;
+            background: transparent;
+        }}
+        .pdf-btn {{
+            width: 100%;
+            background-color: #0f172a;
+            color: #ffffff;
+            border: 1px solid #0f172a;
+            font-weight: 700;
+            font-size: 15px;
+            padding: 0.68rem 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            box-sizing: border-box;
+            transition: background-color 0.15s ease;
+        }}
+        .pdf-btn:hover {{
+            background-color: #334155;
+        }}
+        .pdf-btn:disabled {{
+            opacity: 0.65;
+            cursor: wait;
+        }}
+        /* 캡처용 오프스크린 영역 (화면 밖에서 정밀 렌더링) */
+        #offscreen-wrapper {{
+            position: fixed;
+            left: -9999px;
+            top: 0;
+            width: 860px;
+            background: #ffffff;
+            padding: 10px;
+        }}
+        {COURT_CARD_CSS}
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    </head>
+    <body>
+        <button id="download-pdf-btn" class="pdf-btn" onclick="downloadCardAsPDF()">
+            📄 별지 소송비용계산서 (그림 그대로) 다운로드 (.pdf)
+        </button>
+        <div id="offscreen-wrapper">
+            {html_card_content}
+        </div>
+        <script>
+        function downloadCardAsPDF() {{
+            const btn = document.getElementById('download-pdf-btn');
+            const element = document.getElementById('pdf-capture-target');
+            const origText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '⏳ PDF 생성 중... 잠시만 기다려주세요';
+
+            const opt = {{
+                margin: [10, 10, 10, 10],
+                filename: '별지_소송비용계산서.pdf',
+                image: {{ type: 'jpeg', quality: 0.98 }},
+                html2canvas: {{ scale: 2, useCORS: true, backgroundColor: '#ffffff' }},
+                jsPDF: {{ unit: 'mm', format: 'a4', orientation: 'portrait' }}
+            }};
+
+            html2pdf().set(opt).from(element).save().then(() => {{
+                btn.disabled = false;
+                btn.innerHTML = origText;
+            }}).catch((err) => {{
+                console.error(err);
+                btn.disabled = false;
+                btn.innerHTML = origText;
+            }});
+        }}
+        </script>
+    </body>
+    </html>
+    """
+    components.html(component_html, height=54)
 
 
 def make_docx(cases, model, options, prayer, cause):
@@ -736,6 +976,7 @@ def make_docx(cases, model, options, prayer, cause):
 
     doc.add_paragraph(f"신청인 : {options['role']}{ref_paren_doc}")
     doc.add_paragraph(soga_line_doc)
+    doc.add_paragraph("(단위 : 원, 1원 미만 버림)")
     doc.add_paragraph()
 
     use_table_format = options.get('output_format') == '표 양식 (법원 서식)'
@@ -875,148 +1116,25 @@ def make_docx(cases, model, options, prayer, cause):
 def main():
     st.set_page_config(page_title='소송비용 신청서 만들기', page_icon='⚖️', layout='wide')
 
-    st.markdown("""
+    st.markdown(f"""
     <style>
-    .block-container {
+    .block-container {{
         max-width: 980px !important;
         padding-top: 2rem !important;
-    }
-    [data-testid="stDownloadButton"] button {
+    }}
+    [data-testid="stDownloadButton"] button {{
         background-color: #1e3a8a;
         color: #ffffff;
         border: 1px solid #1e3a8a;
         font-weight: 700;
         padding: 0.65rem 1rem;
         border-radius: 6px;
-    }
-    [data-testid="stDownloadButton"] button:hover {
+    }}
+    [data-testid="stDownloadButton"] button:hover {{
         background-color: #172554;
         color: #ffffff;
-    }
-
-    /* 법원 결정문 스타일 카드 & 테이블 */
-    .court-doc-card {
-        background: #ffffff;
-        border: 1px solid #cbd5e1;
-        border-radius: 8px;
-        padding: 32px 36px;
-        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
-        margin-top: 12px;
-        margin-bottom: 24px;
-        color: #0f172a;
-        font-family: 'Pretendard', 'Malgun Gothic', '맑은 고딕', serif;
-    }
-    .court-doc-title {
-        text-align: center;
-        font-size: 22px;
-        font-weight: 800;
-        letter-spacing: 0.25em;
-        margin-bottom: 22px;
-        color: #0f172a;
-    }
-    .court-meta-box {
-        background: #f8fafc;
-        border-left: 4px solid #334155;
-        padding: 12px 16px;
-        font-size: 14px;
-        line-height: 1.6;
-        margin-bottom: 16px;
-        border-radius: 0 6px 6px 0;
-    }
-    .court-burden-list {
-        margin-top: 6px;
-        padding-top: 6px;
-        border-top: 1px dashed #cbd5e1;
-        color: #334155;
-        font-size: 13.5px;
-    }
-    .court-table-topbar {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-end;
-        margin-bottom: 6px;
-        font-size: 13.5px;
-    }
-    .court-table-topbar .sec-label {
-        font-weight: 700;
-        font-size: 14.5px;
-    }
-    .court-table-topbar .unit-label {
-        color: #64748b;
-        font-size: 12.5px;
-    }
-    .court-cost-table {
-        width: 100% !important;
-        border-collapse: collapse !important;
-        border-top: 2px solid #0f172a !important;
-        border-bottom: 2px solid #0f172a !important;
-        font-size: 13.5px !important;
-        table-layout: fixed !important;
-        background: #ffffff !important;
-    }
-    .court-cost-table th,
-    .court-cost-table td {
-        border: 1px solid #cbd5e1 !important;
-        padding: 9px 12px !important;
-        vertical-align: middle !important;
-        word-break: keep-all !important;
-        line-height: 1.45 !important;
-    }
-    .court-cost-table thead th {
-        background-color: #f1f5f9 !important;
-        color: #0f172a !important;
-        font-weight: 700 !important;
-        text-align: center !important;
-        border-bottom: 1.5px solid #64748b !important;
-    }
-    .cell-stage {
-        background-color: #fcfcfd !important;
-        font-weight: 700 !important;
-        text-align: center !important;
-        color: #0f172a !important;
-    }
-    .cell-center {
-        text-align: center !important;
-    }
-    .cell-right {
-        text-align: right !important;
-        font-variant-numeric: tabular-nums !important;
-        font-weight: 500 !important;
-        white-space: nowrap !important;
-    }
-    .cell-left {
-        text-align: left !important;
-        color: #334155 !important;
-        font-size: 13px !important;
-    }
-    .row-subtotal td {
-        background-color: #f8fafc !important;
-        font-weight: 600 !important;
-    }
-    .row-main-subtotal td {
-        background-color: #f1f5f9 !important;
-        font-weight: 700 !important;
-        color: #0f172a !important;
-        border-top: 1.5px solid #94a3b8 !important;
-        border-bottom: 1.5px solid #94a3b8 !important;
-    }
-    .row-grand-total td {
-        background-color: #eff6ff !important;
-        font-weight: 700 !important;
-        color: #1e3a8a !important;
-        font-size: 14.5px !important;
-        border-top: 2px solid #2563eb !important;
-    }
-    .court-reimburse-box {
-        margin-top: 14px;
-        padding: 12px 16px;
-        background: #f8fafc;
-        border: 1px solid #cbd5e1;
-        border-radius: 6px;
-        font-weight: 700;
-        font-size: 14.5px;
-        color: #0f172a;
-    }
+    }}
+    {COURT_CARD_CSS}
     </style>
     """, unsafe_allow_html=True)
 
@@ -1223,8 +1341,9 @@ def main():
 
     st.subheader('별지 소송비용액계산서')
 
+    html_table = render_html_table(cases, model, options)
+
     if output_format == '표 양식 (법원 서식)':
-        html_table = render_html_table(cases, model, options)
         st.markdown(html_table, unsafe_allow_html=True)
     else:
         before, after = render_text_calculation(cases, model, options)
@@ -1233,6 +1352,10 @@ def main():
         for line in after:
             st.write(line)
 
+    # 1. 별지 계산서 그림 그대로 PDF 다운로드 버튼 (.docx 다운로드 바로 위)
+    render_pdf_download_button(html_table)
+
+    # 2. 기존 Word (.docx) 다운로드 버튼
     args = (cases, model, options, prayer, cause)
     try:
         document = make_docx(*args)
